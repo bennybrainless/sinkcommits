@@ -8,25 +8,11 @@ A complete, private reading progress synchronization solution for [KOReader](htt
 
 ## Zero-Password Device Pairing
 
-Pair your Kindle/KOReader device in 5 seconds without typing passwords on an e-ink keyboard:
+Pair your Kindle or KOReader device in seconds without typing passwords on an e-ink keyboard:
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User
-    participant Kindle as Kindle (KOReader)
-    participant Phone as Phone/PC Browser
-    participant Server as Sink Worker (Cloudflare)
-
-    User->>Kindle: Tap "Pair Device (Phone/PC)"
-    Kindle->>Server: Request pairing session
-    Server-->>Kindle: 6-Character Code (e.g. K9X 2P4)
-    Kindle->>Kindle: Display Code on screen
-    User->>Phone: Open Sink Web Dashboard & enter code
-    Phone->>Server: Connect Device
-    Server-->>Kindle: Auto-paired!
-    Kindle->>Kindle: Save credentials & activate sync
-```
+1. **On your E-Reader**: Tap **Tools** &rarr; **Sink** &rarr; **Pair Device (Phone/PC)** to display a 6-character code (e.g., `K9X 2P4`).
+2. **On your Phone or PC**: Open your Sink web dashboard and enter the code.
+3. **Done**: Your device connects automatically and starts syncing reading progress.
 
 ---
 
