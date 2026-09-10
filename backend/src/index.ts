@@ -9,9 +9,24 @@ import { ensureDatabase } from "./db";
 
 const app = new Hono<{ Bindings: Env; Variables: { username: string } }>();
 
-// Enable CORS for web clients / dashboard
+// Enable CORS for web clients / dashboard on users and syncs routes (pairing session endpoints are same-origin)
 app.use(
-  "*",
+  "/users/*",
+  cors({
+    origin: "*",
+    allowHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Auth-User",
+      "X-Auth-Key",
+      "Accept",
+    ],
+    allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    exposeHeaders: ["X-Auth-User", "X-Auth-Token"],
+  })
+);
+app.use(
+  "/syncs/*",
   cors({
     origin: "*",
     allowHeaders: [
@@ -99,6 +114,8 @@ app.get("/", async (c) => {
     .code-input-wrap { max-width: 260px; margin: 0 auto 1.25rem auto; }
     .code-input { width: 100%; background: #0b121e; border: 2px solid var(--primary); color: var(--primary); border-radius: 12px; padding: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1.75rem; font-weight: 800; letter-spacing: 6px; text-transform: uppercase; text-align: center; outline: none; box-shadow: 0 0 15px rgba(56, 189, 248, 0.15); }
     .code-input:focus { border-color: var(--primary-hover); box-shadow: 0 0 20px rgba(56, 189, 248, 0.3); }
+    .pin-input { width: 100%; background: #0b121e; border: 1px solid var(--border); color: var(--text); border-radius: 10px; padding: 12px; font-size: 1.1rem; font-weight: 600; text-align: center; letter-spacing: 4px; outline: none; margin-bottom: 0.5rem; transition: border-color 0.15s; }
+    .pin-input:focus { border-color: var(--primary); }
     .btn-primary { width: 100%; background: var(--primary); color: #090d16; border: none; border-radius: 12px; padding: 14px; font-size: 1rem; font-weight: 800; cursor: pointer; transition: all 0.15s ease; display: flex; align-items: center; justify-content: center; gap: 6px; }
     .btn-primary:hover { background: var(--primary-hover); }
     .btn-primary:disabled { background: #1e293b; color: #64748b; cursor: not-allowed; }
@@ -106,6 +123,10 @@ app.get("/", async (c) => {
     .alert.success { background: rgba(52, 211, 153, 0.15); border: 1px solid var(--success); color: var(--success); }
     .alert.error { background: rgba(248, 113, 113, 0.15); border: 1px solid var(--error); color: var(--error); }
     .footer-help { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.78rem; color: var(--text-muted); line-height: 1.5; }
+    .pin-wrap { margin-bottom: 1.25rem; text-align: left; }
+    .pin-label { font-size: 0.82rem; font-weight: 700; color: var(--text-muted); margin-bottom: 6px; display: block; }
+    .forgot-pin { font-size: 0.76rem; color: var(--primary); text-decoration: none; cursor: pointer; float: right; }
+    .forgot-pin:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -116,12 +137,12 @@ app.get("/", async (c) => {
     </div>
 
     <div class="notice">
-      🔒 <strong>Instant Device Pairing</strong>: No passwords to remember or type on your Kindle. Enter the 6-character code shown on your e-reader to pair it instantly.
+      🔒 <strong>Instant Device Pairing</strong>: Enter the 6-character code shown on your e-reader to pair it instantly.
     </div>
 
-    <div class="step-title">Enter Pairing Code</div>
-    <p class="step-desc">
-      On your Kindle/KOReader device, tap <strong>Tools &rarr; Sink &rarr; Pair Device (Phone/PC)</strong> to see your 6-character code.
+    <div class="step-title" id="stepTitle">Pair E-Reader</div>
+    <p class="step-desc" id="stepDesc">
+      On your Kindle/KOReader device, tap <strong>Tools &rarr; Sink &rarr; Pair Device (Phone/PC)</strong> to see your code.
     </p>
 
     <form id="pairForm">
@@ -140,6 +161,22 @@ app.get("/", async (c) => {
         />
       </div>
 
+      <div class="pin-wrap">
+        <div>
+          <label for="pairingPin" class="pin-label" id="pinLabel">Pairing PIN</label>
+          <span class="forgot-pin" id="btnForgotPin">Forgot PIN?</span>
+        </div>
+        <input
+          type="password"
+          id="pairingPin"
+          class="pin-input"
+          placeholder="4-digit PIN"
+          inputmode="numeric"
+          maxlength="16"
+          autocomplete="current-password"
+        />
+      </div>
+
       <button type="submit" id="btnSubmit" class="btn-primary">
         <span>Connect E-Reader &rarr;</span>
       </button>
@@ -148,20 +185,58 @@ app.get("/", async (c) => {
     </form>
 
     <div class="footer-help">
-      <strong>How it works:</strong> All devices paired with this server sync reading progress together automatically and silently in the background.
+      <strong>How it works:</strong> Paired devices sync reading progress together automatically and silently in the background.
     </div>
   </div>
 
   <script>
-    // Auto-fill pairing code if passed in URL: ?s=CODE
-    window.addEventListener('DOMContentLoaded', () => {
+    const STORAGE_KEY = 'sink_pairing_pin';
+
+    window.addEventListener('DOMContentLoaded', async () => {
+      // Auto-fill code from URL query parameter ?s=CODE
       const params = new URLSearchParams(window.location.search);
       const code = (params.get('s') || '').trim().toUpperCase();
-      const input = document.getElementById('pairingCode');
+      const codeInput = document.getElementById('pairingCode');
       if (code && code.length >= 4) {
-        input.value = code;
+        codeInput.value = code;
+      }
+
+      // Check if PIN is already stored in browser localStorage
+      const savedPin = localStorage.getItem(STORAGE_KEY);
+      const pinInput = document.getElementById('pairingPin');
+      if (savedPin) {
+        pinInput.value = savedPin;
+      }
+
+      // Query server status to customize UI for initial setup vs returning user
+      try {
+        const res = await fetch('/api/session/status');
+        const data = await res.json();
+        if (data && data.is_configured === false) {
+          document.getElementById('stepTitle').innerText = 'Set Up Your Sink Server';
+          document.getElementById('stepDesc').innerText = 'Enter your e-reader code and choose a 4-digit PIN to secure your server.';
+          document.getElementById('pinLabel').innerText = 'Choose a 4-digit Pairing PIN';
+          document.getElementById('btnForgotPin').style.display = 'none';
+        }
+      } catch (_) {}
+
+      if (!codeInput.value) {
+        codeInput.focus();
+      } else if (!pinInput.value) {
+        pinInput.focus();
+      } else {
         document.getElementById('btnSubmit').focus();
       }
+    });
+
+    document.getElementById('btnForgotPin').addEventListener('click', (e) => {
+      e.preventDefault();
+      alert(
+        "Forgot your Pairing PIN?\n\n" +
+        "1. Open KOReader on your already-paired e-reader and tap:\n" +
+        "   Tools -> Sink -> Reset Pairing PIN\n\n" +
+        "2. Or set the PAIRING_PIN variable in your Cloudflare Worker dashboard."
+      );
     });
 
     document.getElementById('pairForm').addEventListener('submit', async (e) => {
@@ -169,10 +244,18 @@ app.get("/", async (c) => {
       const alertBox = document.getElementById('alertBox');
       const btn = document.getElementById('btnSubmit');
       const code = document.getElementById('pairingCode').value.trim().toUpperCase();
+      const pin = document.getElementById('pairingPin').value.trim();
 
       if (!code || code.length < 4) {
         alertBox.className = 'alert error';
         alertBox.innerText = 'Please enter the 6-character code from your e-reader screen.';
+        alertBox.style.display = 'block';
+        return;
+      }
+
+      if (!pin || pin.length < 4) {
+        alertBox.className = 'alert error';
+        alertBox.innerText = 'Please enter your 4-digit Pairing PIN.';
         alertBox.style.display = 'block';
         return;
       }
@@ -185,18 +268,20 @@ app.get("/", async (c) => {
         const res = await fetch('/api/session/' + encodeURIComponent(code) + '/submit', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: 'primary_reader' })
+          body: JSON.stringify({ username: 'primary_reader', pin: pin })
         });
         const data = await res.json();
 
         if (res.ok && data.success) {
+          // Persist PIN in browser localStorage for 1-click pairings on future devices
+          localStorage.setItem(STORAGE_KEY, pin);
           alertBox.className = 'alert success';
           alertBox.innerText = '✓ Device paired successfully! Look at your e-reader screen.';
           alertBox.style.display = 'block';
           btn.innerText = '✓ Connected!';
         } else {
           alertBox.className = 'alert error';
-          alertBox.innerText = data.error || data.message || 'Invalid or expired code. Please check the code on your device.';
+          alertBox.innerText = data.error || data.message || 'Invalid code or PIN. Please check and try again.';
           alertBox.style.display = 'block';
           btn.disabled = false;
           btn.innerText = 'Connect E-Reader →';

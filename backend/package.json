@@ -20,7 +20,7 @@
     "kindle"
   ],
   "author": "",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "dependencies": {
     "hono": "^4.7.4"
   },

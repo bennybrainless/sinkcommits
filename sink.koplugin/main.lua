@@ -1134,6 +1134,20 @@ function Sink:getMenuTable()
             end,
         },
 
+        -- Reset Pairing PIN
+        {
+            text = _("Reset Pairing PIN"),
+            enabled_func = function()
+                return self.settings.username ~= ""
+            end,
+            keep_menu_open = false,
+            callback = function()
+                if SinkPairing and SinkPairing.showResetPinDialog then
+                    SinkPairing:showResetPinDialog(self)
+                end
+            end,
+        },
+
         -- 7. Synced Books (Cloud Library)
         {
             text = _("Synced Books (Cloud Library)"),

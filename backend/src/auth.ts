@@ -3,14 +3,126 @@ import { Env, KosyncErrors } from "./types";
 import { getUserByUsername } from "./db";
 
 /**
- * Hash a password using Web Crypto SHA-256.
+ * Convert buffer to hex string.
  */
-export async function hashPassword(password: string): Promise<string> {
+function bufferToHex(buffer: ArrayBuffer | Uint8Array): string {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Convert hex string to Uint8Array.
+ */
+function hexToBuffer(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+/**
+ * Hash a password or PIN using PBKDF2-HMAC-SHA256 (100,000 iterations).
+ * Format: pbkdf2:100000:<salt_hex>:<hash_hex>
+ */
+export async function hashPasswordPBKDF2(password: string, saltHex?: string): Promise<string> {
+  const encoder = new TextEncoder();
+  let salt: Uint8Array;
+  if (saltHex) {
+    salt = hexToBuffer(saltHex);
+  } else {
+    salt = new Uint8Array(16);
+    crypto.getRandomValues(salt);
+  }
+
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(password),
+    { name: "PBKDF2" },
+    false,
+    ["deriveBits"]
+  );
+
+  const derivedBits = await crypto.subtle.deriveBits(
+    {
+      name: "PBKDF2",
+      salt: salt,
+      iterations: 100000,
+      hash: "SHA-256",
+    },
+    keyMaterial,
+    256 // 32 bytes
+  );
+
+  const derivedHex = bufferToHex(derivedBits);
+  const finalSaltHex = bufferToHex(salt);
+  return `pbkdf2:100000:${finalSaltHex}:${derivedHex}`;
+}
+
+/**
+ * Legacy single-round SHA-256 hash for backwards compatibility.
+ */
+export async function hashPasswordLegacy(password: string): Promise<string> {
   const encoder = new TextEncoder();
   const data = encoder.encode(`koreader_salt_${password}`);
   const hashBuffer = await crypto.subtle.digest("SHA-256", data);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Hash a password using PBKDF2 by default.
+ */
+export async function hashPassword(password: string): Promise<string> {
+  return hashPasswordPBKDF2(password);
+}
+
+/**
+ * Hash a Pairing PIN with PBKDF2.
+ */
+export async function hashPin(pin: string): Promise<string> {
+  return hashPasswordPBKDF2(pin);
+}
+
+/**
+ * Verify a password against a stored hash (supports both PBKDF2 and legacy SHA-256).
+ */
+export async function verifyPassword(
+  password: string,
+  storedHash: string
+): Promise<{ valid: boolean; needsRehash: boolean }> {
+  if (!password || !storedHash) {
+    return { valid: false, needsRehash: false };
+  }
+
+  if (storedHash.startsWith("pbkdf2:100000:")) {
+    const parts = storedHash.split(":");
+    if (parts.length === 4) {
+      const saltHex = parts[2];
+      const expectedHash = await hashPasswordPBKDF2(password, saltHex);
+      return { valid: timingSafeEqual(expectedHash, storedHash), needsRehash: false };
+    }
+  }
+
+  // Fallback: Verify legacy SHA-256 hash
+  const legacyHash = await hashPasswordLegacy(password);
+  if (timingSafeEqual(legacyHash, storedHash)) {
+    return { valid: true, needsRehash: true };
+  }
+
+  return { valid: false, needsRehash: false };
+}
+
+/**
+ * Verify a Pairing PIN against a stored hash or environment secret.
+ */
+export async function verifyPin(pin: string, storedHashOrSecret: string): Promise<boolean> {
+  if (!pin || !storedHashOrSecret) return false;
+  if (storedHashOrSecret.startsWith("pbkdf2:")) {
+    const { valid } = await verifyPassword(pin, storedHashOrSecret);
+    return valid;
+  }
+  return timingSafeEqual(pin, storedHashOrSecret);
 }
 
 /**
@@ -97,8 +209,24 @@ export async function authenticate(
     return false;
   }
 
-  const computedHash = await hashPassword(userKey);
-  return timingSafeEqual(computedHash, user.password_hash);
+  const { valid, needsRehash } = await verifyPassword(userKey, user.password_hash);
+  if (!valid) {
+    return false;
+  }
+
+  if (needsRehash) {
+    try {
+      const newHash = await hashPassword(userKey);
+      await db
+        .prepare("UPDATE users SET password_hash = ? WHERE username = ?")
+        .bind(newHash, username)
+        .run();
+    } catch (err) {
+      console.warn("Failed to auto-upgrade legacy password hash:", err);
+    }
+  }
+
+  return true;
 }
 
 /**

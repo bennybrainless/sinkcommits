@@ -1,16 +1,54 @@
 import { describe, it, expect } from "vitest";
-import { hashPassword, timingSafeEqual, isValidKeyField } from "../src/auth";
+import {
+  hashPassword,
+  hashPasswordPBKDF2,
+  hashPasswordLegacy,
+  verifyPassword,
+  hashPin,
+  verifyPin,
+  timingSafeEqual,
+  isValidKeyField,
+} from "../src/auth";
 
 describe("Auth Utilities", () => {
-  it("generates deterministic SHA-256 password hash", async () => {
-    const hash1 = await hashPassword("mySecretPassword123");
-    const hash2 = await hashPassword("mySecretPassword123");
-    const diffHash = await hashPassword("differentPassword");
+  it("generates and verifies PBKDF2 password hashes", async () => {
+    const hash = await hashPassword("mySecretPassword123");
+    expect(typeof hash).toBe("string");
+    expect(hash.startsWith("pbkdf2:100000:")).toBe(true);
 
-    expect(typeof hash1).toBe("string");
-    expect(hash1.length).toBe(64); // SHA-256 hex length
-    expect(hash1).toBe(hash2);
-    expect(hash1).not.toBe(diffHash);
+    const check1 = await verifyPassword("mySecretPassword123", hash);
+    expect(check1.valid).toBe(true);
+    expect(check1.needsRehash).toBe(false);
+
+    const check2 = await verifyPassword("wrongPassword", hash);
+    expect(check2.valid).toBe(false);
+  });
+
+  it("verifies and flags legacy SHA-256 password hashes for rehash", async () => {
+    const legacyHash = await hashPasswordLegacy("mySecretPassword123");
+    expect(legacyHash.length).toBe(64);
+
+    const check = await verifyPassword("mySecretPassword123", legacyHash);
+    expect(check.valid).toBe(true);
+    expect(check.needsRehash).toBe(true);
+
+    const badCheck = await verifyPassword("wrongPassword", legacyHash);
+    expect(badCheck.valid).toBe(false);
+  });
+
+  it("hashes and verifies pairing PINs securely", async () => {
+    const pinHash = await hashPin("1234");
+    expect(pinHash.startsWith("pbkdf2:100000:")).toBe(true);
+
+    const valid = await verifyPin("1234", pinHash);
+    expect(valid).toBe(true);
+
+    const invalid = await verifyPin("9999", pinHash);
+    expect(invalid).toBe(false);
+
+    // Also supports plaintext environment secrets
+    expect(await verifyPin("5678", "5678")).toBe(true);
+    expect(await verifyPin("0000", "5678")).toBe(false);
   });
 
   it("safely compares strings with timingSafeEqual", () => {

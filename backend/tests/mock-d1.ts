@@ -7,6 +7,8 @@ import { User, ProgressRecord } from "../src/types";
 export function createMockD1(): D1Database {
   const usersTable = new Map<string, User>();
   const progressTable = new Map<string, ProgressRecord>();
+  const appConfigTable = new Map<string, string>();
+  const sessionsTable = new Map<string, any>();
 
   const createMeta = (changes: number): any => ({
     changes,
@@ -30,6 +32,23 @@ export function createMockD1(): D1Database {
 
         async first<T = unknown>(colName?: string): Promise<T | null> {
           const q = query.trim();
+
+          // App config query: SELECT value FROM app_config WHERE key = ?
+          if (q.includes("FROM app_config WHERE key = ?")) {
+            const key = boundParams[0];
+            const val = appConfigTable.get(key);
+            if (val === undefined) return null;
+            return { value: val } as unknown as T;
+          }
+
+          // Pairing sessions query: SELECT ... FROM pairing_sessions WHERE session_id = ?
+          if (q.includes("FROM pairing_sessions WHERE session_id = ?")) {
+            const sessionId = boundParams[0];
+            const sess = sessionsTable.get(sessionId) || null;
+            if (!sess) return null;
+            if (colName) return sess[colName] as T;
+            return sess as unknown as T;
+          }
 
           // User query: SELECT ... FROM users WHERE username = ?
           if (q.includes("FROM users WHERE username = ?")) {
@@ -81,6 +100,67 @@ export function createMockD1(): D1Database {
 
         async run<T = Record<string, unknown>>(): Promise<D1Result<T>> {
           const q = query.trim();
+
+          // App config upsert
+          if (q.includes("INSERT INTO app_config")) {
+            const key = boundParams[0];
+            const value = boundParams[1];
+            appConfigTable.set(key, value);
+            return {
+              results: [] as T[],
+              success: true,
+              meta: createMeta(1),
+            };
+          }
+
+          // Pairing session insert
+          if (q.includes("INSERT INTO pairing_sessions")) {
+            const [sessionId, pollToken, expiresAt, createdAt] = boundParams;
+            sessionsTable.set(sessionId, {
+              session_id: sessionId,
+              poll_token: pollToken,
+              status: "pending",
+              username: null,
+              userkey: null,
+              expires_at: expiresAt,
+              created_at: createdAt,
+            });
+            return {
+              results: [] as T[],
+              success: true,
+              meta: createMeta(1),
+            };
+          }
+
+          // Pairing session update: UPDATE pairing_sessions SET status = 'ready'
+          if (q.includes("UPDATE pairing_sessions SET status = 'ready'")) {
+            const [username, userkey, sessionId] = boundParams;
+            const sess = sessionsTable.get(sessionId);
+            if (sess) {
+              sess.status = "ready";
+              sess.username = username;
+              sess.userkey = userkey;
+            }
+            return {
+              results: [] as T[],
+              success: true,
+              meta: createMeta(1),
+            };
+          }
+
+          // User update password_hash
+          if (q.includes("UPDATE users SET password_hash = ? WHERE username = ?")) {
+            const [hash, username] = boundParams;
+            const u = usersTable.get(username);
+            if (u) {
+              u.password_hash = hash;
+            }
+            return {
+              results: [] as T[],
+              success: true,
+              meta: createMeta(1),
+            };
+          }
 
           // User insert / upsert: INSERT INTO users ...
           if (q.includes("INSERT INTO users")) {

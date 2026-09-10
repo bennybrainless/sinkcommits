@@ -30,7 +30,7 @@ describe("KOReader Kosync API Endpoints", () => {
   });
 
   describe("Code-Based Pairing Flow (/api/session)", () => {
-    it("creates a new 6-character pairing session", async () => {
+    it("creates a new 6-character pairing session with secret poll_token", async () => {
       const res = await app.request(
         "/api/session/create",
         {
@@ -46,11 +46,12 @@ describe("KOReader Kosync API Endpoints", () => {
       expect(data.success).toBe(true);
       expect(typeof data.session_id).toBe("string");
       expect(data.session_id.length).toBe(6);
+      expect(typeof data.poll_token).toBe("string");
+      expect(data.poll_token.length).toBe(32);
       expect(data.expires_in).toBe(600);
     });
 
-    it("handles full pairing lifecycle between e-reader and phone browser", async () => {
-      // 1. E-reader creates session
+    it("rejects polling without valid poll_token", async () => {
       const createRes = await app.request(
         "/api/session/create",
         { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
@@ -58,17 +59,37 @@ describe("KOReader Kosync API Endpoints", () => {
       );
       const { session_id } = await createRes.json<any>();
 
-      // 2. Initial poll returns 204 No Content (waiting for phone)
-      const pollRes1 = await app.request(`/api/session/${session_id}/poll`, { method: "GET" }, env);
+      // Polling without X-Poll-Token should fail with 401
+      const pollRes = await app.request(`/api/session/${session_id}/poll`, { method: "GET" }, env);
+      expect(pollRes.status).toBe(401);
+      const pollData = await pollRes.json<any>();
+      expect(pollData.error).toContain("Unauthorized");
+    });
+
+    it("handles full pairing lifecycle between e-reader and phone browser with PIN", async () => {
+      // 1. E-reader creates session
+      const createRes = await app.request(
+        "/api/session/create",
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+        env
+      );
+      const { session_id, poll_token } = await createRes.json<any>();
+
+      // 2. Initial poll with valid poll_token returns 204 No Content (waiting for phone)
+      const pollRes1 = await app.request(
+        `/api/session/${session_id}/poll`,
+        { method: "GET", headers: { "x-poll-token": poll_token } },
+        env
+      );
       expect(pollRes1.status).toBe(204);
 
-      // 3. User enters code and clicks Connect on phone
+      // 3. User sets up PIN and clicks Connect on phone
       const submitRes = await app.request(
         `/api/session/${session_id}/submit`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: "my_kindle", userkey: "secret_sync_key" }),
+          body: JSON.stringify({ username: "my_kindle", pin: "1234" }),
         },
         env
       );
@@ -77,64 +98,145 @@ describe("KOReader Kosync API Endpoints", () => {
       expect(submitData.success).toBe(true);
 
       // 4. E-reader poll now receives credentials
-      const pollRes2 = await app.request(`/api/session/${session_id}/poll`, { method: "GET" }, env);
+      const pollRes2 = await app.request(
+        `/api/session/${session_id}/poll`,
+        { method: "GET", headers: { "x-poll-token": poll_token } },
+        env
+      );
       expect(pollRes2.status).toBe(200);
       const pollData = await pollRes2.json<any>();
       expect(pollData.success).toBe(true);
       expect(pollData.status).toBe("ready");
       expect(pollData.username).toBe("my_kindle");
-      expect(pollData.userkey).toBe("secret_sync_key");
+      expect(typeof pollData.userkey).toBe("string");
     });
 
-    it("updates credentials and allows authentication after re-pairing", async () => {
-      // 1. Initial pairing
+    it("requires PIN for subsequent device pairing and shares sync_key", async () => {
+      // 1. First device pairs and establishes PIN 1234
       const createRes1 = await app.request("/api/session/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, env);
-      const { session_id: s1 } = await createRes1.json<any>();
-      await app.request(`/api/session/${s1}/submit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "primary_reader", userkey: "key_v1" }) }, env);
+      const { session_id: s1, poll_token: pt1 } = await createRes1.json<any>();
+      await app.request(`/api/session/${s1}/submit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "primary_reader", pin: "1234" }) }, env);
 
-      // 2. Auth check with key_v1 works
-      const authRes1 = await app.request("/users/auth", { method: "GET", headers: { "x-auth-user": "primary_reader", "x-auth-key": "key_v1" } }, env);
-      expect(authRes1.status).toBe(200);
-
-      // 3. Re-pair with new session & key_v2
-      const createRes2 = await app.request("/api/session/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, env);
-      const { session_id: s2 } = await createRes2.json<any>();
-      await app.request(`/api/session/${s2}/submit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "primary_reader", userkey: "key_v2" }) }, env);
-
-      // 4. Auth check with key_v2 succeeds
-      const authRes2 = await app.request("/users/auth", { method: "GET", headers: { "x-auth-user": "primary_reader", "x-auth-key": "key_v2" } }, env);
-      expect(authRes2.status).toBe(200);
-      const authData = await authRes2.json<any>();
-      expect(authData.authorized).toBe("OK");
-    });
-
-    it("shares account sync_key across multiple devices so both can authenticate", async () => {
-      // 1. Device 1 (WSL) pairs via web portal
-      const createRes1 = await app.request("/api/session/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, env);
-      const { session_id: s1 } = await createRes1.json<any>();
-      await app.request(`/api/session/${s1}/submit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "primary_reader" }) }, env);
-
-      const pollRes1 = await app.request(`/api/session/${s1}/poll`, { method: "GET" }, env);
+      const pollRes1 = await app.request(`/api/session/${s1}/poll`, { method: "GET", headers: { "x-poll-token": pt1 } }, env);
       const { userkey: d1_key } = await pollRes1.json<any>();
       expect(d1_key).toBeTruthy();
 
-      // 2. Device 2 (Phone) pairs later
+      // 2. Second device attempts pairing without PIN -> should fail with 401
       const createRes2 = await app.request("/api/session/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, env);
-      const { session_id: s2 } = await createRes2.json<any>();
-      await app.request(`/api/session/${s2}/submit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "primary_reader" }) }, env);
+      const { session_id: s2, poll_token: pt2 } = await createRes2.json<any>();
 
-      const pollRes2 = await app.request(`/api/session/${s2}/poll`, { method: "GET" }, env);
+      const failedSubmit = await app.request(
+        `/api/session/${s2}/submit`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "primary_reader" }) },
+        env
+      );
+      expect(failedSubmit.status).toBe(401);
+
+      // 3. Second device pairs with wrong PIN -> should fail with 401
+      const wrongPinSubmit = await app.request(
+        `/api/session/${s2}/submit`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "primary_reader", pin: "9999" }) },
+        env
+      );
+      expect(wrongPinSubmit.status).toBe(401);
+
+      // 4. Second device pairs with correct PIN -> succeeds and receives same sync_key
+      const correctSubmit = await app.request(
+        `/api/session/${s2}/submit`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "primary_reader", pin: "1234" }) },
+        env
+      );
+      expect(correctSubmit.status).toBe(200);
+
+      const pollRes2 = await app.request(`/api/session/${s2}/poll`, { method: "GET", headers: { "x-poll-token": pt2 } }, env);
       const { userkey: d2_key } = await pollRes2.json<any>();
-
-      // Both devices must share the same key
       expect(d2_key).toBe(d1_key);
 
-      // Both devices must be able to authenticate simultaneously
+      // 5. Both devices can authenticate simultaneously
       const auth1 = await app.request("/users/auth", { method: "GET", headers: { "x-auth-user": "primary_reader", "x-auth-key": d1_key } }, env);
       expect(auth1.status).toBe(200);
 
       const auth2 = await app.request("/users/auth", { method: "GET", headers: { "x-auth-user": "primary_reader", "x-auth-key": d2_key } }, env);
       expect(auth2.status).toBe(200);
+    });
+
+    it("prevents account takeover: /submit cannot overwrite existing credentials", async () => {
+      // 1. Initial pairing
+      const createRes1 = await app.request("/api/session/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, env);
+      const { session_id: s1, poll_token: pt1 } = await createRes1.json<any>();
+      await app.request(`/api/session/${s1}/submit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "primary_reader", pin: "1234" }) }, env);
+      const { userkey: originalKey } = await (await app.request(`/api/session/${s1}/poll`, { method: "GET", headers: { "x-poll-token": pt1 } }, env)).json<any>();
+
+      // 2. Attacker attempts to overwrite account credentials with their own key without PIN
+      const createRes2 = await app.request("/api/session/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, env);
+      const { session_id: s2 } = await createRes2.json<any>();
+      const attackRes = await app.request(
+        `/api/session/${s2}/submit`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "primary_reader", userkey: "attacker_new_key" }) },
+        env
+      );
+      expect(attackRes.status).toBe(401);
+
+      // 3. Original credentials remain valid and untouched
+      const authCheck = await app.request("/users/auth", { method: "GET", headers: { "x-auth-user": "primary_reader", "x-auth-key": originalKey } }, env);
+      expect(authCheck.status).toBe(200);
+    });
+
+    it("allows resetting PIN from authenticated device via /api/session/reset-pin", async () => {
+      // 1. Initial setup with PIN 1234
+      const createRes1 = await app.request("/api/session/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, env);
+      const { session_id: s1, poll_token: pt1 } = await createRes1.json<any>();
+      await app.request(`/api/session/${s1}/submit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "primary_reader", pin: "1234" }) }, env);
+      const { userkey: d1_key } = await (await app.request(`/api/session/${s1}/poll`, { method: "GET", headers: { "x-poll-token": pt1 } }, env)).json<any>();
+
+      // 2. Unauthenticated caller attempts to reset PIN -> rejected with 401
+      const unauthReset = await app.request("/api/session/reset-pin", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ new_pin: "5678" }) }, env);
+      expect(unauthReset.status).toBe(401);
+
+      // 3. Authenticated device resets PIN to 5678
+      const authReset = await app.request(
+        "/api/session/reset-pin",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-auth-user": "primary_reader",
+            "x-auth-key": d1_key,
+          },
+          body: JSON.stringify({ new_pin: "5678" }),
+        },
+        env
+      );
+      expect(authReset.status).toBe(200);
+
+      // 4. Old PIN 1234 is no longer accepted
+      const createRes2 = await app.request("/api/session/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, env);
+      const { session_id: s2 } = await createRes2.json<any>();
+      const oldPinSubmit = await app.request(`/api/session/${s2}/submit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "primary_reader", pin: "1234" }) }, env);
+      expect(oldPinSubmit.status).toBe(401);
+
+      // 5. New PIN 5678 is accepted
+      const newPinSubmit = await app.request(`/api/session/${s2}/submit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "primary_reader", pin: "5678" }) }, env);
+      expect(newPinSubmit.status).toBe(200);
+    });
+
+    it("reports server configuration status correctly", async () => {
+      // Before setup: is_configured is false
+      const res1 = await app.request("/api/session/status", { method: "GET" }, env);
+      expect(res1.status).toBe(200);
+      const data1 = await res1.json<any>();
+      expect(data1.is_configured).toBe(false);
+
+      // Setup server
+      const createRes = await app.request("/api/session/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, env);
+      const { session_id } = await createRes.json<any>();
+      await app.request(`/api/session/${session_id}/submit`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "primary_reader", pin: "1234" }) }, env);
+
+      // After setup: is_configured is true
+      const res2 = await app.request("/api/session/status", { method: "GET" }, env);
+      expect(res2.status).toBe(200);
+      const data2 = await res2.json<any>();
+      expect(data2.is_configured).toBe(true);
     });
   });
 

@@ -41,11 +41,19 @@ export async function ensureDatabase(db: D1Database): Promise<void> {
       db.prepare(`
         CREATE TABLE IF NOT EXISTS pairing_sessions (
           session_id TEXT PRIMARY KEY,
+          poll_token TEXT,
           status TEXT NOT NULL,
           username TEXT,
           userkey TEXT,
           expires_at INTEGER NOT NULL,
           created_at INTEGER NOT NULL
+        )
+      `),
+      db.prepare(`
+        CREATE TABLE IF NOT EXISTS app_config (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
         )
       `),
       db.prepare(`
@@ -84,6 +92,9 @@ export async function ensureDatabase(db: D1Database): Promise<void> {
     // Ensure sync_key and progress metadata columns exist in existing deployments
     try {
       await db.prepare("ALTER TABLE users ADD COLUMN sync_key TEXT").run();
+    } catch {}
+    try {
+      await db.prepare("ALTER TABLE pairing_sessions ADD COLUMN poll_token TEXT").run();
     } catch {}
     try {
       await db.prepare("ALTER TABLE progress ADD COLUMN title TEXT").run();
@@ -167,6 +178,35 @@ export async function upsertUser(
     .bind(username, passwordHash, syncKey ?? null)
     .run();
 
+  return result.success;
+}
+
+export async function getAppConfig(
+  db: D1Database,
+  key: string
+): Promise<string | null> {
+  await ensureDatabase(db);
+  const result = await db
+    .prepare("SELECT value FROM app_config WHERE key = ?")
+    .bind(key)
+    .first<{ value: string }>();
+  return result ? result.value : null;
+}
+
+export async function setAppConfig(
+  db: D1Database,
+  key: string,
+  value: string
+): Promise<boolean> {
+  await ensureDatabase(db);
+  const now = Math.floor(Date.now() / 1000);
+  const result = await db
+    .prepare(`
+      INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `)
+    .bind(key, value, now)
+    .run();
   return result.success;
 }
 

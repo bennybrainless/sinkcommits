@@ -29,6 +29,7 @@ pcall(function() QRWidget = require("ui/widget/qrwidget") end)
 local SinkPairing = {
     dialog = nil,
     session_id = nil,
+    poll_token = nil,
     poll_timer = nil,
     is_pairing = false,
     poll_count = 0,
@@ -82,6 +83,7 @@ end
 function SinkPairing:stop()
     self.is_pairing = false
     self.session_id = nil
+    self.poll_token = nil
     if self.poll_timer then
         UIManager:unschedule(self.poll_timer)
         self.poll_timer = nil
@@ -128,6 +130,7 @@ function SinkPairing:startPairing(sink_plugin, on_complete)
 
         local session_id = sess_data.session_id
         self.session_id = session_id
+        self.poll_token = sess_data.poll_token
         self.is_pairing = true
         self.poll_count = 0
         logger.info("Sink: started pairing session with code: " .. tostring(session_id))
@@ -250,7 +253,12 @@ function SinkPairing:pollSession(server_url, session_id, sink_plugin, on_complet
     end
 
     local poll_url = server_url .. "/api/session/" .. session_id .. "/poll"
-    local poll_ok, poll_code, poll_resp = httpRequest(poll_url, "GET", {}, nil, 4)
+    local poll_headers = {}
+    if self.poll_token then
+        poll_headers["X-Poll-Token"] = self.poll_token
+        poll_url = poll_url .. "?token=" .. self.poll_token
+    end
+    local poll_ok, poll_code, poll_resp = httpRequest(poll_url, "GET", poll_headers, nil, 4)
 
     if not self.is_pairing or self.session_id ~= session_id then return end
 
@@ -285,6 +293,65 @@ function SinkPairing:pollSession(server_url, session_id, sink_plugin, on_complet
         end
         UIManager:scheduleIn(1.5, self.poll_timer)
     end
+end
+
+function SinkPairing:showResetPinDialog(sink_plugin)
+    local InputDialog = require("ui/widget/inputdialog")
+    local input_dlg
+    input_dlg = InputDialog:new{
+        title = _("Reset Pairing PIN"),
+        description = _("Enter a new 4-digit PIN for device pairing:"),
+        input = "",
+        input_type = "number",
+        buttons = {
+            {
+                {
+                    text = _("Cancel"),
+                    id = "close",
+                    callback = function()
+                        UIManager:close(input_dlg)
+                    end,
+                },
+                {
+                    text = _("Save PIN"),
+                    is_enter_default = true,
+                    callback = function()
+                        local new_pin = input_dlg:getInputValue():match("^%s*(.-)%s*$")
+                        if not new_pin or #new_pin < 4 then
+                            UIManager:show(InfoMessage:new{
+                                text = _("PIN must be at least 4 digits."),
+                            })
+                            return
+                        end
+                        UIManager:close(input_dlg)
+
+                        NetworkMgr:runWhenOnline(function()
+                            local server_url = cleanUrl(sink_plugin.settings.server_url)
+                            local reset_url = server_url .. "/api/session/reset-pin"
+                            local req_headers = {
+                                ["Content-Type"] = "application/json",
+                                ["x-auth-user"] = sink_plugin.settings.username or "",
+                                ["x-auth-key"] = sink_plugin.settings.userkey or "",
+                            }
+                            local req_body = json.encode({ new_pin = new_pin })
+                            local ok, code, resp_text = httpRequest(reset_url, "POST", req_headers, req_body, 8)
+                            if ok and code == 200 then
+                                UIManager:show(InfoMessage:new{
+                                    text = _("✓ Pairing PIN updated successfully!\nYou can now use this PIN when connecting devices."),
+                                    timeout = 6,
+                                })
+                            else
+                                UIManager:show(InfoMessage:new{
+                                    text = string.format(_("Could not update PIN (%s).\nPlease verify your connection and try again."), tostring(code or "Error")),
+                                })
+                            end
+                        end)
+                    end,
+                },
+            },
+        },
+    }
+    UIManager:show(input_dlg)
 end
 
 return SinkPairing
