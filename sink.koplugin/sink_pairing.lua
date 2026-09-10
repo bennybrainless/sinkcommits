@@ -303,55 +303,54 @@ function SinkPairing:showResetPinDialog(sink_plugin)
         description = _("Enter a new 4-digit PIN for device pairing:"),
         input = "",
         input_type = "number",
-        buttons = {
-            {
-                {
-                    text = _("Cancel"),
-                    id = "close",
-                    callback = function()
-                        UIManager:close(input_dlg)
-                    end,
-                },
-                {
-                    text = _("Save PIN"),
-                    is_enter_default = true,
-                    callback = function()
-                        local new_pin = input_dlg:getInputValue():match("^%s*(.-)%s*$")
-                        if not new_pin or #new_pin < 4 then
-                            UIManager:show(InfoMessage:new{
-                                text = _("PIN must be at least 4 digits."),
-                            })
-                            return
-                        end
-                        UIManager:close(input_dlg)
+        save_callback = function(new_pin)
+            new_pin = new_pin and new_pin:match("^%s*(.-)%s*$")
+            if not new_pin or #new_pin < 4 then
+                UIManager:show(InfoMessage:new{
+                    text = _("PIN must be at least 4 digits."),
+                })
+                return
+            end
 
-                        NetworkMgr:runWhenOnline(function()
-                            local server_url = cleanUrl(sink_plugin.settings.server_url)
-                            local reset_url = server_url .. "/api/session/reset-pin"
-                            local req_headers = {
-                                ["Content-Type"] = "application/json",
-                                ["x-auth-user"] = sink_plugin.settings.username or "",
-                                ["x-auth-key"] = sink_plugin.settings.userkey or "",
-                            }
-                            local req_body = json.encode({ new_pin = new_pin })
-                            local ok, code, resp_text = httpRequest(reset_url, "POST", req_headers, req_body, 8)
-                            if ok and code == 200 then
-                                UIManager:show(InfoMessage:new{
-                                    text = _("✓ Pairing PIN updated successfully!\nYou can now use this PIN when connecting devices."),
-                                    timeout = 6,
-                                })
-                            else
-                                UIManager:show(InfoMessage:new{
-                                    text = string.format(_("Could not update PIN (%s).\nPlease verify your connection and try again."), tostring(code or "Error")),
-                                })
-                            end
-                        end)
-                    end,
-                },
-            },
-        },
+            NetworkMgr:runWhenOnline(function()
+                local res, err
+                if sink_plugin and sink_plugin._makeRequest then
+                    res, err = sink_plugin:_makeRequest("POST", "/api/session/reset-pin", { new_pin = new_pin })
+                else
+                    local server_url = cleanUrl(sink_plugin.settings.server_url)
+                    local reset_url = server_url .. "/api/session/reset-pin"
+                    local req_headers = {
+                        ["Content-Type"] = "application/json",
+                        ["x-auth-user"] = sink_plugin.settings.username or "",
+                        ["x-auth-key"] = sink_plugin.settings.userkey or "",
+                    }
+                    local req_body = json.encode({ new_pin = new_pin })
+                    local ok, code, resp_text = httpRequest(reset_url, "POST", req_headers, req_body, 8)
+                    res = { status = code, raw = resp_text }
+                end
+
+                if res and res.status == 200 then
+                    UIManager:show(InfoMessage:new{
+                        text = _("✓ Pairing PIN updated successfully!\nYou can now use this PIN when connecting devices."),
+                        timeout = 6,
+                    })
+                elseif res and res.status == 404 then
+                    UIManager:show(InfoMessage:new{
+                        text = _("Backend endpoint not found (404).\nPlease deploy the updated backend to your Cloudflare Worker."),
+                    })
+                else
+                    local err_detail = (res and res.body and res.body.error) or (res and tostring(res.status)) or err or "Error"
+                    UIManager:show(InfoMessage:new{
+                        text = string.format(_("Could not update PIN (%s).\nPlease check your connection or backend deployment."), tostring(err_detail)),
+                    })
+                end
+            end)
+        end,
     }
     UIManager:show(input_dlg)
+    if input_dlg.onShowKeyboard then
+        input_dlg:onShowKeyboard()
+    end
 end
 
 return SinkPairing

@@ -337,6 +337,14 @@ sessionRouter.post("/:id/submit", async (c) => {
       const { valid } = await verifyPassword(body.userkey.trim(), existingUser.password_hash);
       if (valid) {
         isAuthorized = true;
+        if (db && !configuredPinHash && !envPin && submittedPin && submittedPin.length >= 4) {
+          try {
+            const hashedPin = await hashPin(submittedPin);
+            await setAppConfig(db, "pairing_pin_hash", hashedPin);
+          } catch (err) {
+            console.error("Error establishing initial PIN via userkey fallback:", err);
+          }
+        }
       }
     }
 
