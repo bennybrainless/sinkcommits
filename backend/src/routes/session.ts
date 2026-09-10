@@ -1,7 +1,26 @@
 import { Hono } from "hono";
 import { Env, KosyncErrors } from "../types";
-import { ensureDatabase, createUser, getUserByUsername, getAppConfig, setAppConfig } from "../db";
-import { hashPassword, hashPin, verifyPin, verifyPassword, timingSafeEqual, requireAuth } from "../auth";
+import {
+  ensureDatabase,
+  createUser,
+  getUserByUsername,
+  getAppConfig,
+  setAppConfig,
+  addTrustedBrowser,
+  verifyTrustedBrowser,
+  revokeTrustedBrowser,
+  revokeAllTrustedBrowsers,
+} from "../db";
+import {
+  hashPassword,
+  hashPin,
+  verifyPin,
+  verifyPassword,
+  timingSafeEqual,
+  requireAuth,
+  generateBrowserToken,
+  hashToken,
+} from "../auth";
 
 export const sessionRouter = new Hono<{ Bindings: Env; Variables: { username: string } }>();
 
@@ -60,24 +79,38 @@ async function ensureSessionTable(db: D1Database): Promise<void> {
   }
 }
 
-// 0. GET /api/session/status -> Checks whether the server already has a PIN configured
+// 0. GET /api/session/status -> Checks whether the server already has a PIN configured and validates browser tokens
 sessionRouter.get("/status", async (c) => {
   const db = c.env.DB;
   let isConfigured = false;
+  let isBrowserTrusted = false;
+
+  const reqBrowserToken =
+    c.req.header("x-browser-token") || c.req.query("browser_token") || "";
 
   if (c.env.PAIRING_PIN || c.env.PAIRING_SECRET) {
     isConfigured = true;
-  } else if (db) {
+  }
+  if (db) {
     try {
       await ensureDatabase(db);
       const pinHash = await getAppConfig(db, "pairing_pin_hash");
-      isConfigured = !!pinHash;
+      if (pinHash) isConfigured = true;
+
+      if (reqBrowserToken) {
+        const tokenHash = await hashToken(reqBrowserToken);
+        isBrowserTrusted = await verifyTrustedBrowser(db, tokenHash);
+      }
     } catch {
       isConfigured = false;
     }
   }
 
-  return c.json({ is_configured: isConfigured, has_pin: isConfigured });
+  return c.json({
+    is_configured: isConfigured,
+    has_pin: isConfigured,
+    browser_trusted: isBrowserTrusted,
+  });
 });
 
 // 1. POST /api/session/create -> E-reader requests pairing code and secret poll token
@@ -256,7 +289,13 @@ sessionRouter.post("/:id/submit", async (c) => {
     );
   }
 
-  let body: { username?: string; userkey?: string; pin?: string };
+  let body: {
+    username?: string;
+    userkey?: string;
+    pin?: string;
+    trust_browser?: boolean;
+    browser_token?: string;
+  };
   try {
     body = await c.req.json();
   } catch {
@@ -265,6 +304,8 @@ sessionRouter.post("/:id/submit", async (c) => {
 
   const username = (body.username || "primary_reader").trim();
   const submittedPin = (body.pin || "").trim();
+  const reqBrowserToken =
+    (c.req.header("x-browser-token") || body.browser_token || "").trim();
 
   // Determine existing security state
   let configuredPinHash: string | null = null;
@@ -324,10 +365,19 @@ sessionRouter.post("/:id/submit", async (c) => {
       userkey = (existingUser && existingUser.sync_key) || `sink_key_${sessionId}`;
     }
   } else {
-    // SUBSEQUENT PAIRING: Strictly authenticate using PIN or existing credentials
+    // SUBSEQUENT PAIRING: Authenticate via trusted browser token, PIN, or existing credentials
     let isAuthorized = false;
 
-    if (submittedPin) {
+    // 1. Authorize via trusted browser token
+    if (reqBrowserToken && db) {
+      const tokenHash = await hashToken(reqBrowserToken);
+      if (await verifyTrustedBrowser(db, tokenHash)) {
+        isAuthorized = true;
+      }
+    }
+
+    // 2. Authorize via submitted PIN
+    if (!isAuthorized && submittedPin) {
       if (envPin && (await verifyPin(submittedPin, envPin))) {
         isAuthorized = true;
         // Keep DB PIN hash in sync with envPin override
@@ -382,6 +432,18 @@ sessionRouter.post("/:id/submit", async (c) => {
     userkey = `sink_key_${sessionId}`;
   }
 
+  // Issue trusted browser token if requested (valid for 1 year with rolling renewal)
+  let newBrowserToken: string | null = null;
+  if (body.trust_browser && db) {
+    try {
+      newBrowserToken = generateBrowserToken();
+      const tokenHash = await hashToken(newBrowserToken);
+      await addTrustedBrowser(db, tokenHash, 365 * 86400);
+    } catch (err) {
+      console.warn("Failed to issue trusted browser token:", err);
+    }
+  }
+
   // Update session status to ready
   session.status = "ready";
   session.username = username;
@@ -406,6 +468,7 @@ sessionRouter.post("/:id/submit", async (c) => {
   return c.json({
     success: true,
     message: "Device paired successfully! Your e-reader will automatically connect.",
+    browser_token: newBrowserToken || undefined,
   });
 });
 
@@ -424,11 +487,11 @@ sessionRouter.post("/reset-pin", requireAuth, async (c) => {
   }
 
   const newPin = (body.new_pin || "").trim();
-  if (!newPin || newPin.length < 4 || newPin.length > 32) {
+  if (!newPin || !/^\d{4}$/.test(newPin)) {
     return c.json(
       {
         success: false,
-        error: "New PIN must be between 4 and 32 characters.",
+        error: "New PIN must be an exact 4-digit number (0000-9999).",
       },
       400
     );
@@ -438,9 +501,11 @@ sessionRouter.post("/reset-pin", requireAuth, async (c) => {
     await ensureDatabase(db);
     const pinHash = await hashPin(newPin);
     await setAppConfig(db, "pairing_pin_hash", pinHash);
+    // Invalidate all existing browser tokens when the PIN is reset
+    await revokeAllTrustedBrowsers(db);
     return c.json({
       success: true,
-      message: "Pairing PIN updated successfully.",
+      message: "Pairing PIN updated successfully. All trusted browser sessions have been reset.",
     });
   } catch (err: any) {
     return c.json(
@@ -451,4 +516,25 @@ sessionRouter.post("/reset-pin", requireAuth, async (c) => {
       500
     );
   }
+});
+
+// 5. POST /api/session/revoke-browser -> Invalidate trusted browser session
+sessionRouter.post("/revoke-browser", async (c) => {
+  const db = c.env.DB;
+  if (!db) {
+    return c.json({ success: false, error: "Database not configured." }, 500);
+  }
+
+  let body: { browser_token?: string } = {};
+  try {
+    body = await c.req.json();
+  } catch {}
+
+  const token = (c.req.header("x-browser-token") || body.browser_token || "").trim();
+  if (token) {
+    const tokenHash = await hashToken(token);
+    await revokeTrustedBrowser(db, tokenHash);
+  }
+
+  return c.json({ success: true, message: "Browser authorization revoked." });
 });

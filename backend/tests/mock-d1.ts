@@ -9,6 +9,7 @@ export function createMockD1(): D1Database {
   const progressTable = new Map<string, ProgressRecord>();
   const appConfigTable = new Map<string, string>();
   const sessionsTable = new Map<string, any>();
+  const trustedBrowsersTable = new Map<string, { token_hash: string; expires_at: number; created_at: number }>();
 
   const createMeta = (changes: number): any => ({
     changes,
@@ -32,6 +33,14 @@ export function createMockD1(): D1Database {
 
         async first<T = unknown>(colName?: string): Promise<T | null> {
           const q = query.trim();
+
+          // Trusted browsers query: SELECT ... FROM trusted_browsers WHERE token_hash = ?
+          if (q.includes("FROM trusted_browsers WHERE token_hash = ?")) {
+            const hash = boundParams[0];
+            const row = trustedBrowsersTable.get(hash);
+            if (!row) return null;
+            return row as unknown as T;
+          }
 
           // App config query: SELECT value FROM app_config WHERE key = ?
           if (q.includes("FROM app_config WHERE key = ?")) {
@@ -111,6 +120,32 @@ export function createMockD1(): D1Database {
               success: true,
               meta: createMeta(1),
             };
+          }
+
+          // Trusted browsers operations
+          if (q.includes("INSERT INTO trusted_browsers")) {
+            const [tokenHash, expiresAt, createdAt] = boundParams;
+            trustedBrowsersTable.set(tokenHash, {
+              token_hash: tokenHash,
+              expires_at: expiresAt,
+              created_at: createdAt,
+            });
+            return { results: [] as T[], success: true, meta: createMeta(1) };
+          }
+          if (q.includes("UPDATE trusted_browsers SET expires_at = ?")) {
+            const [newExpiresAt, tokenHash] = boundParams;
+            const row = trustedBrowsersTable.get(tokenHash);
+            if (row) row.expires_at = newExpiresAt;
+            return { results: [] as T[], success: true, meta: createMeta(1) };
+          }
+          if (q.includes("DELETE FROM trusted_browsers WHERE token_hash = ?")) {
+            const tokenHash = boundParams[0];
+            trustedBrowsersTable.delete(tokenHash);
+            return { results: [] as T[], success: true, meta: createMeta(1) };
+          }
+          if (q.includes("DELETE FROM trusted_browsers")) {
+            trustedBrowsersTable.clear();
+            return { results: [] as T[], success: true, meta: createMeta(1) };
           }
 
           // Pairing session insert

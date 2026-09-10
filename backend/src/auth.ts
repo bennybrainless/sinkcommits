@@ -126,6 +126,28 @@ export async function verifyPin(pin: string, storedHashOrSecret: string): Promis
 }
 
 /**
+ * Generate a cryptographically random 256-bit (64 hex char) browser authorization token.
+ */
+export function generateBrowserToken(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * SHA-256 hash a browser token for secure at-rest storage.
+ */
+export async function hashToken(token: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(token);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
  * Constant-time string comparison to prevent timing attacks.
  */
 export function timingSafeEqual(a: string, b: string): boolean {

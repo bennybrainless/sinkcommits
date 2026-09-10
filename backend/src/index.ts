@@ -114,8 +114,15 @@ app.get("/", async (c) => {
     .code-input-wrap { max-width: 260px; margin: 0 auto 1.25rem auto; }
     .code-input { width: 100%; background: #0b121e; border: 2px solid var(--primary); color: var(--primary); border-radius: 12px; padding: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1.75rem; font-weight: 800; letter-spacing: 6px; text-transform: uppercase; text-align: center; outline: none; box-shadow: 0 0 15px rgba(56, 189, 248, 0.15); }
     .code-input:focus { border-color: var(--primary-hover); box-shadow: 0 0 20px rgba(56, 189, 248, 0.3); }
-    .pin-input { width: 100%; background: #0b121e; border: 1px solid var(--border); color: var(--text); border-radius: 10px; padding: 12px; font-size: 1.25rem; font-weight: 700; text-align: center; letter-spacing: 6px; outline: none; margin-bottom: 0.35rem; transition: border-color 0.15s; font-family: ui-monospace, SFMono-Regular, monospace; }
+    .pin-input-container { position: relative; width: 100%; }
+    .pin-input { width: 100%; background: #0b121e; border: 1px solid var(--border); color: var(--text); border-radius: 10px; padding: 12px 42px 12px 12px; font-size: 1.3rem; font-weight: 700; text-align: center; letter-spacing: 8px; outline: none; margin-bottom: 0.35rem; transition: border-color 0.15s; font-family: ui-monospace, SFMono-Regular, monospace; }
     .pin-input:focus { border-color: var(--primary); }
+    .btn-eye { position: absolute; right: 10px; top: 12px; background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 4px; font-size: 1.1rem; user-select: none; }
+    .btn-eye:hover { color: var(--text); }
+    .trusted-card { background: rgba(52, 211, 153, 0.1); border: 1px solid rgba(52, 211, 153, 0.3); border-radius: 12px; padding: 12px 14px; margin-bottom: 1.25rem; display: flex; justify-content: space-between; align-items: center; font-size: 0.82rem; }
+    .trusted-card strong { color: var(--success); }
+    .trust-row { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; color: var(--text-muted); margin-bottom: 1.25rem; user-select: none; }
+    .trust-row input[type="checkbox"] { accent-color: var(--primary); width: 16px; height: 16px; cursor: pointer; }
     .btn-primary { width: 100%; background: var(--primary); color: #090d16; border: none; border-radius: 12px; padding: 14px; font-size: 1rem; font-weight: 800; cursor: pointer; transition: all 0.15s ease; display: flex; align-items: center; justify-content: center; gap: 6px; }
     .btn-primary:hover { background: var(--primary-hover); }
     .btn-primary:disabled { background: #1e293b; color: #64748b; cursor: not-allowed; }
@@ -123,12 +130,12 @@ app.get("/", async (c) => {
     .alert.success { background: rgba(52, 211, 153, 0.15); border: 1px solid var(--success); color: var(--success); }
     .alert.error { background: rgba(248, 113, 113, 0.15); border: 1px solid var(--error); color: var(--error); }
     .footer-help { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.78rem; color: var(--text-muted); line-height: 1.5; }
-    .pin-wrap { margin-bottom: 1.25rem; text-align: left; }
+    .pin-wrap { margin-bottom: 0.75rem; text-align: left; }
     .pin-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
     .pin-label { font-size: 0.82rem; font-weight: 700; color: var(--text-muted); }
     .btn-link { background: none; border: none; font-size: 0.76rem; color: var(--primary); cursor: pointer; padding: 0; text-decoration: none; }
     .btn-link:hover { text-decoration: underline; }
-    .help-panel { background: rgba(15, 23, 42, 0.9); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 1.25rem; font-size: 0.82rem; line-height: 1.5; display: none; text-align: left; }
+    .help-panel { background: rgba(15, 23, 42, 0.95); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 1.25rem; font-size: 0.82rem; line-height: 1.5; display: none; text-align: left; }
     .help-panel h3 { font-size: 0.85rem; color: var(--primary); margin-bottom: 6px; }
     .help-panel ol { margin-left: 1.2rem; color: #cbd5e1; }
     .help-panel li { margin-bottom: 6px; }
@@ -189,27 +196,46 @@ app.get("/", async (c) => {
         />
       </div>
 
-      <div class="pin-wrap">
+      <!-- Trusted Browser Banner (shown when browser is authorized) -->
+      <div id="trustedBanner" class="trusted-card" style="display: none;">
+        <div>
+          <span>🔒</span> <strong>Trusted Browser</strong> &middot; Pre-authorized for 1 year
+        </div>
+        <button type="button" id="btnRevokeTrust" class="btn-link" style="color: var(--text-muted);">Forget</button>
+      </div>
+
+      <!-- PIN Input (shown on untrusted browsers) -->
+      <div class="pin-wrap" id="pinWrap">
         <div class="pin-header">
           <label for="pairingPin" class="pin-label" id="pinLabel">Pairing PIN (4 digits)</label>
           <button type="button" class="btn-link" id="btnForgotPin">Forgot PIN?</button>
         </div>
-        <input
-          type="text"
-          id="pairingPin"
-          name="sink_device_pin"
-          class="pin-input"
-          placeholder="0000"
-          inputmode="numeric"
-          pattern="[0-9]*"
-          maxlength="4"
-          autocomplete="off"
-          autocorrect="off"
-          spellcheck="false"
-          data-1p-ignore="true"
-          data-lpignore="true"
-          data-bwignore="true"
-        />
+        <div class="pin-input-container">
+          <input
+            type="password"
+            id="pairingPin"
+            name="sink_device_pin"
+            class="pin-input"
+            placeholder="••••"
+            inputmode="numeric"
+            pattern="[0-9]*"
+            maxlength="4"
+            autocomplete="off"
+            autocorrect="off"
+            spellcheck="false"
+            data-1p-ignore="true"
+            data-lpignore="true"
+            data-bwignore="true"
+          />
+          <button type="button" id="btnTogglePin" class="btn-eye" title="Toggle PIN visibility">👁</button>
+        </div>
+      </div>
+
+      <div class="trust-row" id="trustRow">
+        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+          <input type="checkbox" id="trustBrowser" checked />
+          <span>Trust this browser for 1 year (no PIN on future visits)</span>
+        </label>
       </div>
 
       <button type="submit" id="btnSubmit" class="btn-primary">
@@ -225,7 +251,12 @@ app.get("/", async (c) => {
   </div>
 
   <script>
-    const STORAGE_KEY = 'sink_pairing_pin';
+    const TOKEN_KEY = 'sink_browser_token';
+
+    // Purge legacy plaintext PIN from localStorage immediately
+    try {
+      localStorage.removeItem('sink_pairing_pin');
+    } catch (_) {}
 
     window.addEventListener('DOMContentLoaded', async () => {
       // Auto-fill code from URL query parameter ?s=CODE
@@ -236,21 +267,26 @@ app.get("/", async (c) => {
         codeInput.value = code;
       }
 
-      // Check if PIN is already stored in browser localStorage
-      const pinInput = document.getElementById('pairingPin');
+      let browserToken = '';
       try {
-        const savedPin = localStorage.getItem(STORAGE_KEY);
-        if (savedPin && /^\\d{4}$/.test(savedPin)) {
-          pinInput.value = savedPin;
-        }
+        browserToken = localStorage.getItem(TOKEN_KEY) || '';
       } catch (_) {}
 
-      // Query server status to customize UI for initial setup vs returning user
+      // Query server status with browser token
       try {
-        const res = await fetch('/api/session/status');
+        const res = await fetch('/api/session/status', {
+          headers: browserToken ? { 'x-browser-token': browserToken } : {}
+        });
         const data = await res.json();
         if (data) {
-          if (data.has_pin === false) {
+          if (data.browser_trusted === true) {
+            // Browser is already authorized for 1 year
+            document.getElementById('trustedBanner').style.display = 'flex';
+            document.getElementById('pinWrap').style.display = 'none';
+            document.getElementById('trustRow').style.display = 'none';
+            document.getElementById('serverBadge').innerText = '🔒 Trusted Device';
+            document.getElementById('btnText').innerText = 'Connect E-Reader →';
+          } else if (data.has_pin === false) {
             document.getElementById('serverBadge').innerText = '⚙ First-Time Setup';
             document.getElementById('stepTitle').innerText = 'Set Up Your Sink Server';
             document.getElementById('stepDesc').innerHTML = 'Enter the 6-character code from your e-reader screen, then choose a <strong>4-digit PIN</strong> below to secure your server.';
@@ -266,11 +302,46 @@ app.get("/", async (c) => {
 
       if (!codeInput.value) {
         codeInput.focus();
-      } else if (!pinInput.value) {
-        pinInput.focus();
+      } else if (document.getElementById('pinWrap').style.display !== 'none') {
+        document.getElementById('pairingPin').focus();
       } else {
         document.getElementById('btnSubmit').focus();
       }
+    });
+
+    // Eye toggle for masked PIN
+    document.getElementById('btnTogglePin').addEventListener('click', () => {
+      const pinInput = document.getElementById('pairingPin');
+      const btn = document.getElementById('btnTogglePin');
+      if (pinInput.type === 'password') {
+        pinInput.type = 'text';
+        btn.innerText = '🔒';
+      } else {
+        pinInput.type = 'password';
+        btn.innerText = '👁';
+      }
+    });
+
+    // Forget this browser
+    document.getElementById('btnRevokeTrust').addEventListener('click', async (e) => {
+      e.preventDefault();
+      try {
+        const token = localStorage.getItem(TOKEN_KEY);
+        if (token) {
+          await fetch('/api/session/revoke-browser', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-browser-token': token },
+            body: JSON.stringify({ browser_token: token })
+          });
+        }
+        localStorage.removeItem(TOKEN_KEY);
+      } catch (_) {}
+      document.getElementById('trustedBanner').style.display = 'none';
+      document.getElementById('pinWrap').style.display = 'block';
+      document.getElementById('trustRow').style.display = 'flex';
+      document.getElementById('serverBadge').innerText = '● Server Active';
+      document.getElementById('pairingPin').value = '';
+      document.getElementById('pairingPin').focus();
     });
 
     // Toggle help panel for PIN reset
@@ -292,6 +363,8 @@ app.get("/", async (c) => {
       const btnText = document.getElementById('btnText');
       const code = document.getElementById('pairingCode').value.trim().toUpperCase();
       const pin = document.getElementById('pairingPin').value.trim();
+      const isTrusted = document.getElementById('trustedBanner').style.display !== 'none';
+      const trustBrowser = document.getElementById('trustBrowser').checked;
 
       if (!code || code.length < 4) {
         alertBox.className = 'alert error';
@@ -301,7 +374,7 @@ app.get("/", async (c) => {
         return;
       }
 
-      if (!pin || pin.length !== 4 || !/^\\d{4}$/.test(pin)) {
+      if (!isTrusted && (!pin || pin.length !== 4 || !/^\\d{4}$/.test(pin))) {
         alertBox.className = 'alert error';
         alertBox.innerText = 'Please enter an exact 4-digit PIN (numbers only, 0000-9999).';
         alertBox.style.display = 'block';
@@ -313,18 +386,46 @@ app.get("/", async (c) => {
       btnText.innerText = 'Connecting...';
       alertBox.style.display = 'none';
 
+      let browserToken = '';
+      try {
+        browserToken = localStorage.getItem(TOKEN_KEY) || '';
+      } catch (_) {}
+
+      const reqHeaders = { 'Content-Type': 'application/json' };
+      if (browserToken) {
+        reqHeaders['x-browser-token'] = browserToken;
+      }
+
+      const reqPayload = {
+        username: 'primary_reader',
+        trust_browser: trustBrowser,
+      };
+      if (isTrusted && browserToken) {
+        reqPayload.browser_token = browserToken;
+      } else {
+        reqPayload.pin = pin;
+      }
+
       try {
         const res = await fetch('/api/session/' + encodeURIComponent(code) + '/submit', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: 'primary_reader', pin: pin })
+          headers: reqHeaders,
+          body: JSON.stringify(reqPayload)
         });
         const data = await res.json().catch(() => null) || {};
 
         if (res.ok && data.success) {
-          try {
-            localStorage.setItem(STORAGE_KEY, pin);
-          } catch (_) {}
+          if (data.browser_token) {
+            try {
+              localStorage.setItem(TOKEN_KEY, data.browser_token);
+            } catch (_) {}
+            document.getElementById('trustedBanner').style.display = 'flex';
+            document.getElementById('pinWrap').style.display = 'none';
+            document.getElementById('trustRow').style.display = 'none';
+            document.getElementById('serverBadge').innerText = '🔒 Trusted Device';
+          }
+          // Clear pin from input memory
+          document.getElementById('pairingPin').value = '';
           alertBox.className = 'alert success';
           alertBox.innerText = '✓ Device paired successfully! Look at your e-reader screen.';
           alertBox.style.display = 'block';

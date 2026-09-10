@@ -238,6 +238,99 @@ describe("KOReader Kosync API Endpoints", () => {
       const data2 = await res2.json<any>();
       expect(data2.is_configured).toBe(true);
     });
+
+    it("supports 1-year trusted browser tokens, bypasses PIN on trusted submit, and revokes properly", async () => {
+      // 1. Initial pairing with trust_browser = true
+      const createRes1 = await app.request("/api/session/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, env);
+      const { session_id: s1 } = await createRes1.json<any>();
+
+      const submitRes1 = await app.request(
+        `/api/session/${s1}/submit`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: "primary_reader", pin: "1234", trust_browser: true }),
+        },
+        env
+      );
+      expect(submitRes1.status).toBe(200);
+      const submitData1 = await submitRes1.json<any>();
+      expect(submitData1.success).toBe(true);
+      expect(typeof submitData1.browser_token).toBe("string");
+      expect(submitData1.browser_token.length).toBe(64);
+
+      const browserToken = submitData1.browser_token;
+
+      // 2. Status check with browser token reports browser_trusted = true
+      const statusRes = await app.request(
+        "/api/session/status",
+        {
+          method: "GET",
+          headers: { "x-browser-token": browserToken },
+        },
+        env
+      );
+      expect(statusRes.status).toBe(200);
+      const statusData = await statusRes.json<any>();
+      expect(statusData.browser_trusted).toBe(true);
+
+      // 3. Pairing second device without entering PIN, using browser_token
+      const createRes2 = await app.request("/api/session/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, env);
+      const { session_id: s2 } = await createRes2.json<any>();
+
+      const submitRes2 = await app.request(
+        `/api/session/${s2}/submit`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: "primary_reader", browser_token: browserToken }),
+        },
+        env
+      );
+      expect(submitRes2.status).toBe(200);
+      const submitData2 = await submitRes2.json<any>();
+      expect(submitData2.success).toBe(true);
+
+      // 4. Revoking the browser token
+      const revokeRes = await app.request(
+        "/api/session/revoke-browser",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ browser_token: browserToken }),
+        },
+        env
+      );
+      expect(revokeRes.status).toBe(200);
+      const revokeData = await revokeRes.json<any>();
+      expect(revokeData.success).toBe(true);
+
+      // 5. Status check now reports browser_trusted = false
+      const statusAfterRevoke = await app.request(
+        "/api/session/status",
+        {
+          method: "GET",
+          headers: { "x-browser-token": browserToken },
+        },
+        env
+      );
+      const revokeStatusData = await statusAfterRevoke.json<any>();
+      expect(revokeStatusData.browser_trusted).toBe(false);
+
+      // 6. Submitting with revoked token without PIN is rejected
+      const createRes3 = await app.request("/api/session/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, env);
+      const { session_id: s3 } = await createRes3.json<any>();
+      const submitRejected = await app.request(
+        `/api/session/${s3}/submit`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: "primary_reader", browser_token: browserToken }),
+        },
+        env
+      );
+      expect(submitRejected.status).toBe(401);
+    });
   });
 
   describe("User Registration (/users/create)", () => {

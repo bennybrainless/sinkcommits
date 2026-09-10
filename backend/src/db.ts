@@ -57,6 +57,13 @@ export async function ensureDatabase(db: D1Database): Promise<void> {
         )
       `),
       db.prepare(`
+        CREATE TABLE IF NOT EXISTS trusted_browsers (
+          token_hash TEXT PRIMARY KEY,
+          expires_at INTEGER NOT NULL,
+          created_at INTEGER NOT NULL
+        )
+      `),
+      db.prepare(`
         CREATE TABLE IF NOT EXISTS devices (
           username TEXT NOT NULL,
           device_id TEXT NOT NULL,
@@ -208,6 +215,65 @@ export async function setAppConfig(
     .bind(key, value, now)
     .run();
   return result.success;
+}
+
+export async function addTrustedBrowser(
+  db: D1Database,
+  tokenHash: string,
+  ttlSeconds: number = 365 * 86400
+): Promise<void> {
+  await ensureDatabase(db);
+  const now = Math.floor(Date.now() / 1000);
+  const expiresAt = now + ttlSeconds;
+  await db
+    .prepare(
+      "INSERT INTO trusted_browsers (token_hash, expires_at, created_at) VALUES (?, ?, ?) ON CONFLICT(token_hash) DO UPDATE SET expires_at = excluded.expires_at"
+    )
+    .bind(tokenHash, expiresAt, now)
+    .run();
+}
+
+export async function verifyTrustedBrowser(
+  db: D1Database,
+  tokenHash: string
+): Promise<boolean> {
+  await ensureDatabase(db);
+  const now = Math.floor(Date.now() / 1000);
+  const row = await db
+    .prepare("SELECT token_hash, expires_at FROM trusted_browsers WHERE token_hash = ?")
+    .bind(tokenHash)
+    .first<{ token_hash: string; expires_at: number }>();
+  if (!row || row.expires_at < now) {
+    return false;
+  }
+  // Rolling renewal: if less than 300 days remain, extend back to 365 days
+  if (row.expires_at - now < 300 * 86400) {
+    const newExpiresAt = now + 365 * 86400;
+    await db
+      .prepare("UPDATE trusted_browsers SET expires_at = ? WHERE token_hash = ?")
+      .bind(newExpiresAt, tokenHash)
+      .run()
+      .catch(() => {});
+  }
+  return true;
+}
+
+export async function revokeTrustedBrowser(
+  db: D1Database,
+  tokenHash: string
+): Promise<void> {
+  await ensureDatabase(db);
+  await db
+    .prepare("DELETE FROM trusted_browsers WHERE token_hash = ?")
+    .bind(tokenHash)
+    .run();
+}
+
+export async function revokeAllTrustedBrowsers(
+  db: D1Database
+): Promise<void> {
+  await ensureDatabase(db);
+  await db.prepare("DELETE FROM trusted_browsers").run();
 }
 
 export async function getProgress(
