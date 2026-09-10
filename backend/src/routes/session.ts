@@ -171,8 +171,14 @@ sessionRouter.post("/:id/submit", async (c) => {
   }
 
   // If no username provided, use a default primary sync account
-  const username = (body.username || "default_reader").trim();
-  const userkey = (body.userkey || `sink_key_${sessionId}`).trim();
+  const username = (body.username || "primary_reader").trim();
+  
+  // For seamless multi-device pairing (Kindle + Phone + Kobo), use a stable sync key
+  // so pairing a 2nd device does not invalidate the credentials of previously paired devices.
+  const defaultStableKey = `sink_sync_${username}`;
+  const userkey = (body.userkey && !body.userkey.startsWith("sync_key_"))
+    ? body.userkey.trim()
+    : defaultStableKey;
 
   // Ensure user account exists and has matching password hash in D1
   if (db) {

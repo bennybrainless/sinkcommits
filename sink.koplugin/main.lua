@@ -50,6 +50,8 @@ local DEFAULT_SETTINGS = {
 function Sink:init()
     self.ui.menu:registerToMainMenu(self)
     self:loadSettings()
+    self.is_reader_ready = false
+    self.last_page_sync = 0
 end
 
 function Sink:getSettingsPath()
@@ -173,21 +175,26 @@ end
 function Sink:_getDocumentMD5()
     if not self.ui then return nil end
 
-    -- 1. Read partial_md5_checksum from document settings (standard KOReader key)
+    -- 1. Read partial_md5_checksum from document settings or readerui (standard KOReader key)
     if self.ui.doc_settings then
         local checksum = self.ui.doc_settings:readSetting("partial_md5_checksum")
         if checksum and checksum ~= "" then
             return checksum
         end
-        -- Fallback check for any legacy key
         local legacy = self.ui.doc_settings:readSetting("doc_md5") or self.ui.doc_settings:readSetting("md5")
         if legacy and legacy ~= "" then
             return legacy
         end
     end
+    if self.ui.md5_checksum and self.ui.md5_checksum ~= "" then
+        return self.ui.md5_checksum
+    end
 
     -- 2. Fallback using document object or file path
     if self.ui.document then
+        if self.ui.document.checksum and self.ui.document.checksum ~= "" then
+            return self.ui.document.checksum
+        end
         if self.ui.document.fastDigest then
             local ok, digest = pcall(function() return self.ui.document:fastDigest() end)
             if ok and digest and digest ~= "" then
@@ -195,18 +202,24 @@ function Sink:_getDocumentMD5()
             end
         end
         if self.ui.document.file then
-            if util and util.partialMD5 then
-                local ok, md5_val = pcall(function() return util.partialMD5(self.ui.document.file) end)
-                if ok and md5_val and md5_val ~= "" then
-                    return md5_val
-                end
+            local ok, md5_val = pcall(function()
+                local u = require("util")
+                return u.partialMD5(self.ui.document.file)
+            end)
+            if ok and md5_val and md5_val ~= "" then
+                return md5_val
             end
-            local ok, sha2 = pcall(require, "ffi/sha2")
-            if ok and sha2 and sha2.md5 then
-                local md5_val = sha2.md5(self.ui.document.file)
-                if md5_val and md5_val ~= "" then
-                    return md5_val
+
+            -- 3. Cross-device filename hash fallback (for identical book files across devices)
+            local ok_fn, fn_hash = pcall(function()
+                local u = require("util")
+                local _, filename = u.splitFilePathName(self.ui.document.file)
+                if filename and filename ~= "" then
+                    return u.md5(filename)
                 end
+            end)
+            if ok_fn and fn_hash and fn_hash ~= "" then
+                return fn_hash
             end
         end
     end
@@ -320,24 +333,27 @@ function Sink:_applyRemoteProgress(remote_progress, remote_percentage)
 end
 
 function Sink:_getDeviceInfo()
-    local model = "Kindle"
-    local device_id = "kindle_device"
-
+    local model = "Device"
     if Device then
         if Device.getModel then
             pcall(function() model = Device:getModel() end)
         elseif Device.model then
             model = tostring(Device.model)
         end
-
-        if Device.getDeviceId then
-            pcall(function() device_id = Device:getDeviceId() end)
-        elseif Device.id then
-            device_id = tostring(Device.id)
-        end
     end
 
-    return model, device_id
+    if not self.settings.device_id or self.settings.device_id == "" or self.settings.device_id == "kindle_device" then
+        local u = nil
+        pcall(function() u = require("util") end)
+        if u and u.genUUID then
+            self.settings.device_id = u.genUUID()
+        else
+            self.settings.device_id = string.format("dev_%d_%d", os.time(), math.random(1000, 9999))
+        end
+        self:saveSettings()
+    end
+
+    return model, self.settings.device_id
 end
 
 --------------------------------------------------------------------------------
@@ -346,7 +362,8 @@ end
 
 -- Perform sync for the current document
 -- is_manual: boolean flag. If true, show user-facing notifications/alerts.
-function Sink:_syncDocument(is_manual)
+-- is_pull_only: boolean flag. If true (e.g. on opening a book), only pull, never overwrite cloud with 0%.
+function Sink:_syncDocument(is_manual, is_pull_only)
     if not self.settings.username or self.settings.username == "" then
         if is_manual then
             UIManager:show(InfoMessage:new{
@@ -372,7 +389,8 @@ function Sink:_syncDocument(is_manual)
         return false
     end
 
-    logger.info(string.format("Sink: syncing document %s (local progress: %.1f%%, %s)", tostring(doc_md5), (local_pct or 0) * 100, tostring(local_prog)))
+    local doc_name = (self.ui.doc_props and self.ui.doc_props.title) or (self.ui.document and self.ui.document.file) or "Document"
+    logger.info(string.format("Sink: checking sync for document %s (%s, local: %.1f%%, %s)", tostring(doc_md5), tostring(doc_name), (local_pct or 0) * 100, tostring(local_prog)))
 
     -- 1. Fetch remote progress
     local res, err = self:_makeRequest("GET", "/syncs/progress/" .. doc_md5)
@@ -390,12 +408,29 @@ function Sink:_syncDocument(is_manual)
     local remote_pct = tonumber(remote.percentage)
     local remote_prog = remote.progress
     local remote_ts = tonumber(remote.timestamp) or 0
+    local local_ts = tonumber(self.settings.last_sync_time) or 0
 
     local dev_model, dev_id = self:_getDeviceInfo()
 
-    -- 2. Compare: If remote progress exists and is further than local progress, apply remote
-    if remote_pct and remote_prog and remote_pct > (local_pct + 0.0001) then
-        logger.info(string.format("Sink: pulling remote progress: %.1f%% (%s)", remote_pct * 100, remote.device or "Remote"))
+    if not remote_prog or not remote_pct then
+        logger.info(string.format("Sink: no progress found on server for document %s", tostring(doc_md5)))
+    else
+        logger.info(string.format("Sink: server progress is %.1f%% (%s) from device '%s' (ts: %s)",
+            remote_pct * 100, tostring(remote_prog), tostring(remote.device or "unknown"), tostring(remote_ts)))
+    end
+
+    -- Determine if remote progress should be pulled:
+    local is_same_progress = (remote_pct and math.abs(remote_pct - local_pct) < 0.0001) or (remote_prog and remote_prog == local_prog)
+    local is_local_at_start = (local_pct or 0) <= 0.01
+    local is_remote_ahead = remote_pct and (remote_pct > (local_pct + 0.0001))
+    local is_remote_newer = remote_ts > (local_ts + 2) and (not remote.device_id or remote.device_id ~= dev_id)
+
+    -- Pull conditions:
+    -- 1. Local is at start (0-1%) and remote has progress -> Pull!
+    -- 2. Remote is further ahead -> Pull!
+    -- 3. Remote is newer from another device -> Pull!
+    if not is_same_progress and remote_prog and remote_pct and (is_local_at_start or is_remote_ahead or is_remote_newer) then
+        logger.info(string.format("Sink: pulling remote progress: jumping from %.1f%% to %.1f%% (%s)", (local_pct or 0) * 100, remote_pct * 100, remote.device or "Remote"))
         self:_applyRemoteProgress(remote_prog, remote_pct)
         self.settings.last_sync_time = remote_ts > 0 and remote_ts or os.time()
         self.settings.last_sync_doc = doc_md5
@@ -407,8 +442,16 @@ function Sink:_syncDocument(is_manual)
             })
         end
         return true
-    else
-        -- 3. Local progress is equal or further: push local progress to cloud
+    elseif is_same_progress then
+        logger.info(string.format("Sink: progress already in sync at %.1f%%", (local_pct or 0) * 100))
+        if is_manual then
+            UIManager:show(Notification:new{
+                text = string.format(_("Already in sync: %.1f%%"), (local_pct or 0) * 100),
+            })
+        end
+        return true
+    elseif not is_pull_only then
+        -- Push local progress to cloud
         logger.info(string.format("Sink: pushing local progress: %.1f%% to cloud", (local_pct or 0) * 100))
         local push_res, push_err = self:_makeRequest("PUT", "/syncs/progress", {
             document = doc_md5,
@@ -439,6 +482,9 @@ function Sink:_syncDocument(is_manual)
             })
         end
         return true
+    else
+        logger.info("Sink: pull-only sync completed. Local is at start or no remote progress to apply.")
+        return true
     end
 end
 
@@ -448,7 +494,7 @@ end
 -- Uses NetworkMgr:isOnline() and completely suppresses errors.
 --------------------------------------------------------------------------------
 
-function Sink:_silentBackgroundSync(trigger_name)
+function Sink:_silentBackgroundSync(trigger_name, is_pull_only)
     if not self.settings.auto_sync then
         return
     end
@@ -461,7 +507,7 @@ function Sink:_silentBackgroundSync(trigger_name)
 
     logger.info("Sink [" .. trigger_name .. "]: Device online. Performing silent sync.")
     local ok, err = pcall(function()
-        self:_syncDocument(false)
+        self:_syncDocument(false, is_pull_only)
     end)
     if not ok then
         -- Suppress all background errors
@@ -470,19 +516,45 @@ function Sink:_silentBackgroundSync(trigger_name)
 end
 
 function Sink:onReaderReady()
-    self:_silentBackgroundSync("onReaderReady")
+    self.is_reader_ready = false
+    UIManager:scheduleIn(0.5, function()
+        self.is_reader_ready = true
+        self:_silentBackgroundSync("onReaderReady", true)
+    end)
+end
+
+function Sink:onPageUpdate(page)
+    if not self.is_reader_ready then
+        -- Ignore initial layout page events before document has finished loading/pulling
+        return
+    end
+
+    local now = os.time()
+    if not self.last_page_sync or (now - self.last_page_sync) >= 20 then
+        self.last_page_sync = now
+        self:_silentBackgroundSync("onPageUpdate", false)
+    end
 end
 
 function Sink:onCloseDocument()
-    self:_silentBackgroundSync("onCloseDocument")
+    self.is_reader_ready = false
+    self:_silentBackgroundSync("onCloseDocument", false)
 end
 
 function Sink:onSuspend()
-    self:_silentBackgroundSync("onSuspend")
+    self:_silentBackgroundSync("onSuspend", false)
+end
+
+function Sink:onResume()
+    UIManager:scheduleIn(1.0, function()
+        self:_silentBackgroundSync("onResume", true)
+    end)
 end
 
 function Sink:onNetworkConnected()
-    self:_silentBackgroundSync("onNetworkConnected")
+    UIManager:scheduleIn(1.0, function()
+        self:_silentBackgroundSync("onNetworkConnected", true)
+    end)
 end
 
 --------------------------------------------------------------------------------

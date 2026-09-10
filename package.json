@@ -7,6 +7,8 @@
     "dev": "wrangler dev",
     "build": "npm --prefix backend run build",
     "test": "npm --prefix backend test",
+    "predeploy": "node ./tools/setup-d1.js",
+    "deploy": "node ./tools/setup-d1.js && wrangler deploy",
     "d1:init:local": "wrangler d1 execute DB --local --file=./migrations/0001_init.sql",
     "d1:init:remote": "wrangler d1 execute DB --remote --file=./migrations/0001_init.sql"
   },
