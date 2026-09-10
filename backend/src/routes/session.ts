@@ -172,23 +172,39 @@ sessionRouter.post("/:id/submit", async (c) => {
 
   // If no username provided, use a default primary sync account
   const username = (body.username || "primary_reader").trim();
-  
-  // For seamless multi-device pairing (Kindle + Phone + Kobo), use a stable sync key
-  // so pairing a 2nd device does not invalidate the credentials of previously paired devices.
-  const defaultStableKey = `sink_sync_${username}`;
-  const userkey = (body.userkey && !body.userkey.startsWith("sync_key_"))
-    ? body.userkey.trim()
-    : defaultStableKey;
+  let userkey = body.userkey ? body.userkey.trim() : "";
 
   // Ensure user account exists and has matching password hash in D1
   if (db) {
     try {
       await ensureDatabase(db);
-      const hash = await hashPassword(userkey);
-      await upsertUser(db, username, hash);
+      const existing = await getUserByUsername(db, username);
+      if (existing) {
+        if (existing.sync_key && (!body.userkey || body.userkey.startsWith("sync_key_"))) {
+          // Stable multi-device key: reuse existing account key so all devices share authentication
+          userkey = existing.sync_key;
+        } else {
+          if (!userkey) {
+            userkey = `sink_key_${sessionId}`;
+          }
+          const hash = await hashPassword(userkey);
+          await upsertUser(db, username, hash, userkey);
+        }
+      } else {
+        // First device pairing: generate/use userkey and store as account's persistent sync_key
+        if (!userkey) {
+          userkey = `sink_key_${sessionId}`;
+        }
+        const hash = await hashPassword(userkey);
+        await createUser(db, username, hash, userkey);
+      }
     } catch (err) {
       console.error("Error creating/updating user during pairing:", err);
     }
+  }
+
+  if (!userkey) {
+    userkey = `sink_key_${sessionId}`;
   }
 
   // Update session status

@@ -51,6 +51,23 @@ export function createMockD1(): D1Database {
             return prog as unknown as T;
           }
 
+          // Progress by book_key query: SELECT ... FROM progress WHERE username = ? AND book_key = ?
+          if (q.includes("FROM progress WHERE username = ? AND book_key = ?")) {
+            const username = boundParams[0];
+            const bookKey = boundParams[1];
+            let best: ProgressRecord | null = null;
+            for (const record of progressTable.values()) {
+              if (record.username === username && record.book_key === bookKey) {
+                if (!best || record.timestamp > best.timestamp) {
+                  best = record;
+                }
+              }
+            }
+            if (!best) return null;
+            if (colName) return (best as any)[colName] as T;
+            return best as unknown as T;
+          }
+
           return null;
         },
 
@@ -65,14 +82,17 @@ export function createMockD1(): D1Database {
         async run<T = Record<string, unknown>>(): Promise<D1Result<T>> {
           const q = query.trim();
 
-          // User insert: INSERT INTO users (username, password_hash) VALUES (?, ?)
+          // User insert / upsert: INSERT INTO users ...
           if (q.includes("INSERT INTO users")) {
             const username = boundParams[0];
             const passwordHash = boundParams[1];
+            const syncKey = boundParams[2];
+            const existing = usersTable.get(username);
             usersTable.set(username, {
               username,
               password_hash: passwordHash,
-              created_at: new Date().toISOString(),
+              sync_key: syncKey !== undefined && syncKey !== null ? syncKey : existing?.sync_key,
+              created_at: existing?.created_at || new Date().toISOString(),
             });
             return {
               results: [] as T[],
@@ -83,9 +103,20 @@ export function createMockD1(): D1Database {
 
           // Progress upsert: INSERT INTO progress ... ON CONFLICT
           if (q.includes("INSERT INTO progress")) {
-            const [username, document_hash, percentage, progress, device, device_id, timestamp] =
-              boundParams;
+            const [
+              username,
+              document_hash,
+              percentage,
+              progress,
+              device,
+              device_id,
+              timestamp,
+              title,
+              authors,
+              book_key,
+            ] = boundParams;
             const key = `${username}:${document_hash}`;
+            const existing = progressTable.get(key);
             progressTable.set(key, {
               username,
               document_hash,
@@ -94,11 +125,35 @@ export function createMockD1(): D1Database {
               device,
               device_id: device_id ?? null,
               timestamp,
+              title: title !== undefined && title !== null ? title : existing?.title,
+              authors: authors !== undefined && authors !== null ? authors : existing?.authors,
+              book_key: book_key !== undefined && book_key !== null ? book_key : existing?.book_key,
             });
             return {
               results: [] as T[],
               success: true,
               meta: createMeta(1),
+            };
+          }
+
+          // Progress update by book_key: UPDATE progress SET ... WHERE username = ? AND book_key = ?
+          if (q.includes("UPDATE progress") && q.includes("WHERE username = ? AND book_key = ?")) {
+            const [percentage, progress, device, device_id, timestamp, username, book_key, excludeHash] = boundParams;
+            let changes = 0;
+            for (const [k, record] of progressTable.entries()) {
+              if (record.username === username && record.book_key === book_key && record.document_hash !== excludeHash) {
+                record.percentage = percentage;
+                record.progress = progress;
+                record.device = device;
+                record.device_id = device_id;
+                record.timestamp = timestamp;
+                changes++;
+              }
+            }
+            return {
+              results: [] as T[],
+              success: true,
+              meta: createMeta(changes),
             };
           }
 
