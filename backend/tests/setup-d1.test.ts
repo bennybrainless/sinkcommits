@@ -61,7 +61,7 @@ Wrangler update available!
   });
 
   describe("resolveDatabaseId", () => {
-    it("should return UUID of existing database if found in list", () => {
+    it("should return databaseId and dbName of existing database if found in list", () => {
       const mockExec = vi.fn().mockImplementation((cmd: string) => {
         if (cmd.includes("d1 list")) {
           return JSON.stringify([
@@ -72,8 +72,11 @@ Wrangler update available!
         return "";
       });
 
-      const uuid = setupD1.resolveDatabaseId("sink_db", mockExec);
-      expect(uuid).toBe("aabbccdd-1234-5678-9abc-def012345678");
+      const result = setupD1.resolveDatabaseId("sink_db", mockExec, tempDir);
+      expect(result).toEqual({
+        databaseId: "aabbccdd-1234-5678-9abc-def012345678",
+        dbName: "sink_db",
+      });
       expect(mockExec).toHaveBeenCalledTimes(1);
     });
 
@@ -88,10 +91,139 @@ Wrangler update available!
         return "";
       });
 
-      const uuid = setupD1.resolveDatabaseId("sink_db", mockExec);
-      expect(uuid).toBe("99887766-5544-3322-1100-aabbccddeeff");
+      const result = setupD1.resolveDatabaseId("sink_db", mockExec, tempDir);
+      expect(result).toEqual({
+        databaseId: "99887766-5544-3322-1100-aabbccddeeff",
+        dbName: "sink_db",
+      });
       expect(mockExec).toHaveBeenCalledWith(
         expect.stringContaining("wrangler d1 create sink_db"),
+        expect.anything()
+      );
+    });
+
+    it("should pick the newest database by created_at when multiple exist", () => {
+      const mockExec = vi.fn().mockImplementation((cmd: string) => {
+        if (cmd.includes("d1 list")) {
+          return JSON.stringify([
+            {
+              name: "sinkdb",
+              uuid: "old-1111-1111-1111-111111111111",
+              created_at: "2024-01-01T00:00:00.000Z",
+            },
+            {
+              name: "sink_db",
+              uuid: "new-2222-2222-2222-222222222222",
+              created_at: "2025-06-01T12:00:00.000Z",
+            },
+          ]);
+        }
+        return "";
+      });
+
+      const result = setupD1.resolveDatabaseId(undefined, mockExec, tempDir);
+      expect(result.databaseId).toBe("new-2222-2222-2222-222222222222");
+      expect(result.dbName).toBe("sink_db");
+    });
+
+    it("should prioritize custom database_name read from wrangler.json", () => {
+      const jsonPath = path.join(tempDir, "wrangler.json");
+      fs.writeFileSync(
+        jsonPath,
+        JSON.stringify({
+          d1_databases: [
+            {
+              binding: "DB",
+              database_name: "my_custom_reading_db",
+              database_id: "00000000-0000-0000-0000-000000000000",
+            },
+          ],
+        })
+      );
+
+      const mockExec = vi.fn().mockImplementation((cmd: string) => {
+        if (cmd.includes("d1 list")) {
+          return JSON.stringify([
+            {
+              name: "sink_db",
+              uuid: "old-sink-1111-2222-333333333333",
+              created_at: "2023-01-01T00:00:00.000Z",
+            },
+            {
+              name: "my_custom_reading_db",
+              uuid: "custom-4444-5555-6666-777777777777",
+              created_at: "2025-01-01T00:00:00.000Z",
+            },
+          ]);
+        }
+        return "";
+      });
+
+      const result = setupD1.resolveDatabaseId(undefined, mockExec, tempDir);
+      expect(result.databaseId).toBe("custom-4444-5555-6666-777777777777");
+      expect(result.dbName).toBe("my_custom_reading_db");
+    });
+
+    it("should respect SINK_DB_ID and SINK_DB_NAME environment variables", () => {
+      const originalDbId = process.env.SINK_DB_ID;
+      const originalDbName = process.env.SINK_DB_NAME;
+
+      try {
+        process.env.SINK_DB_ID = "eeeeeeee-ffff-aaaa-bbbb-cccccccccccc";
+        process.env.SINK_DB_NAME = "env_overridden_db";
+
+        const mockExec = vi.fn();
+        const result = setupD1.resolveDatabaseId(undefined, mockExec, tempDir);
+
+        expect(result.databaseId).toBe("eeeeeeee-ffff-aaaa-bbbb-cccccccccccc");
+        expect(result.dbName).toBe("env_overridden_db");
+        expect(mockExec).not.toHaveBeenCalled();
+      } finally {
+        if (originalDbId !== undefined) {
+          process.env.SINK_DB_ID = originalDbId;
+        } else {
+          delete process.env.SINK_DB_ID;
+        }
+        if (originalDbName !== undefined) {
+          process.env.SINK_DB_NAME = originalDbName;
+        } else {
+          delete process.env.SINK_DB_NAME;
+        }
+      }
+    });
+
+    it("should preserve verified pre-existing database_id in wrangler.json", () => {
+      const jsonPath = path.join(tempDir, "wrangler.json");
+      fs.writeFileSync(
+        jsonPath,
+        JSON.stringify({
+          d1_databases: [
+            {
+              binding: "DB",
+              database_name: "sink_db",
+              database_id: "existing-valid-1111-2222-333333333333",
+            },
+          ],
+        })
+      );
+
+      const mockExec = vi.fn().mockImplementation((cmd: string) => {
+        if (cmd.includes("d1 list")) {
+          return JSON.stringify([
+            {
+              name: "sink_db",
+              uuid: "existing-valid-1111-2222-333333333333",
+            },
+          ]);
+        }
+        return "";
+      });
+
+      const result = setupD1.resolveDatabaseId(undefined, mockExec, tempDir);
+      expect(result.databaseId).toBe("existing-valid-1111-2222-333333333333");
+      expect(result.dbName).toBe("sink_db");
+      expect(mockExec).toHaveBeenCalledWith(
+        expect.stringContaining("d1 list"),
         expect.anything()
       );
     });
