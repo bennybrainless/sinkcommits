@@ -64,21 +64,25 @@ async function ensureSessionTable(db: D1Database): Promise<void> {
 sessionRouter.get("/status", async (c) => {
   const db = c.env.DB;
   let isConfigured = false;
+  let hasPin = false;
 
   if (c.env.PAIRING_PIN || c.env.PAIRING_SECRET) {
     isConfigured = true;
+    hasPin = true;
   } else if (db) {
     try {
       await ensureDatabase(db);
       const pinHash = await getAppConfig(db, "pairing_pin_hash");
       const user = await getUserByUsername(db, "primary_reader");
+      hasPin = !!pinHash;
       isConfigured = !!(pinHash || user);
     } catch {
       isConfigured = false;
+      hasPin = false;
     }
   }
 
-  return c.json({ is_configured: isConfigured });
+  return c.json({ is_configured: isConfigured, has_pin: hasPin });
 });
 
 // 1. POST /api/session/create -> E-reader requests pairing code and secret poll token
@@ -286,13 +290,13 @@ sessionRouter.post("/:id/submit", async (c) => {
   let userkey = "";
 
   if (!isServerConfigured) {
-    // FIRST-TIME SETUP: Require user to establish a 4-digit PIN
-    if (!submittedPin || submittedPin.length < 4) {
+    // FIRST-TIME SETUP: Require user to establish an exact 4-digit PIN
+    if (!submittedPin || !/^\d{4}$/.test(submittedPin)) {
       session.failedAttempts++;
       return c.json(
         {
           success: false,
-          error: "Please choose a 4-digit Pairing PIN to protect your server.",
+          error: "Please choose a 4-digit numeric Pairing PIN (0000-9999) to protect your server.",
         },
         400
       );

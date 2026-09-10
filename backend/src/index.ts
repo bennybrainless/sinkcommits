@@ -109,12 +109,12 @@ app.get("/", async (c) => {
     .badge { font-size: 0.75rem; font-weight: 700; color: var(--success); background: rgba(52, 211, 153, 0.12); border: 1px solid rgba(52, 211, 153, 0.3); padding: 4px 10px; border-radius: 9999px; }
     .notice { background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 12px; padding: 12px 14px; margin-bottom: 1.25rem; font-size: 0.82rem; color: #cbd5e1; line-height: 1.45; }
     .notice strong { color: var(--primary); }
-    .step-title { font-size: 1.1rem; font-weight: 800; margin-bottom: 0.5rem; text-align: center; }
+    .step-title { font-size: 1.15rem; font-weight: 800; margin-bottom: 0.5rem; text-align: center; }
     .step-desc { font-size: 0.85rem; color: var(--text-muted); text-align: center; margin-bottom: 1.25rem; line-height: 1.45; }
     .code-input-wrap { max-width: 260px; margin: 0 auto 1.25rem auto; }
     .code-input { width: 100%; background: #0b121e; border: 2px solid var(--primary); color: var(--primary); border-radius: 12px; padding: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1.75rem; font-weight: 800; letter-spacing: 6px; text-transform: uppercase; text-align: center; outline: none; box-shadow: 0 0 15px rgba(56, 189, 248, 0.15); }
     .code-input:focus { border-color: var(--primary-hover); box-shadow: 0 0 20px rgba(56, 189, 248, 0.3); }
-    .pin-input { width: 100%; background: #0b121e; border: 1px solid var(--border); color: var(--text); border-radius: 10px; padding: 12px; font-size: 1.1rem; font-weight: 600; text-align: center; letter-spacing: 4px; outline: none; margin-bottom: 0.5rem; transition: border-color 0.15s; }
+    .pin-input { width: 100%; background: #0b121e; border: 1px solid var(--border); color: var(--text); border-radius: 10px; padding: 12px; font-size: 1.25rem; font-weight: 700; text-align: center; letter-spacing: 6px; outline: none; margin-bottom: 0.35rem; transition: border-color 0.15s; font-family: ui-monospace, SFMono-Regular, monospace; }
     .pin-input:focus { border-color: var(--primary); }
     .btn-primary { width: 100%; background: var(--primary); color: #090d16; border: none; border-radius: 12px; padding: 14px; font-size: 1rem; font-weight: 800; cursor: pointer; transition: all 0.15s ease; display: flex; align-items: center; justify-content: center; gap: 6px; }
     .btn-primary:hover { background: var(--primary-hover); }
@@ -124,26 +124,51 @@ app.get("/", async (c) => {
     .alert.error { background: rgba(248, 113, 113, 0.15); border: 1px solid var(--error); color: var(--error); }
     .footer-help { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border); font-size: 0.78rem; color: var(--text-muted); line-height: 1.5; }
     .pin-wrap { margin-bottom: 1.25rem; text-align: left; }
-    .pin-label { font-size: 0.82rem; font-weight: 700; color: var(--text-muted); margin-bottom: 6px; display: block; }
-    .forgot-pin { font-size: 0.76rem; color: var(--primary); text-decoration: none; cursor: pointer; float: right; }
-    .forgot-pin:hover { text-decoration: underline; }
+    .pin-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    .pin-label { font-size: 0.82rem; font-weight: 700; color: var(--text-muted); }
+    .btn-link { background: none; border: none; font-size: 0.76rem; color: var(--primary); cursor: pointer; padding: 0; text-decoration: none; }
+    .btn-link:hover { text-decoration: underline; }
+    .help-panel { background: rgba(15, 23, 42, 0.9); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 1.25rem; font-size: 0.82rem; line-height: 1.5; display: none; text-align: left; }
+    .help-panel h3 { font-size: 0.85rem; color: var(--primary); margin-bottom: 6px; }
+    .help-panel ol { margin-left: 1.2rem; color: #cbd5e1; }
+    .help-panel li { margin-bottom: 6px; }
+    .help-panel code { background: rgba(56, 189, 248, 0.15); color: var(--primary); padding: 1px 5px; border-radius: 4px; font-size: 0.78rem; font-family: ui-monospace, monospace; }
   </style>
 </head>
 <body>
   <div class="card">
     <div class="header">
       <h1>Sink</h1>
-      <span class="badge">● Online</span>
+      <span class="badge" id="serverBadge">● Online</span>
     </div>
 
     <div class="notice">
-      🔒 <strong>Instant Device Pairing</strong>: Enter the 6-character code shown on your e-reader to pair it instantly.
+      🔒 <strong>Device Pairing</strong>: Link your e-reader to sync reading progress silently and automatically.
     </div>
 
-    <div class="step-title" id="stepTitle">Pair E-Reader</div>
+    <div class="step-title" id="stepTitle">Connect E-Reader</div>
     <p class="step-desc" id="stepDesc">
-      On your Kindle/KOReader device, tap <strong>Tools &rarr; Sink &rarr; Pair Device (Phone/PC)</strong> to see your code.
+      On your Kindle/KOReader, tap <strong>Tools &rarr; Sink &rarr; Pair Device (Phone/PC)</strong> to generate a 6-character code.
     </p>
+
+    <!-- Expandable Help Box for PIN Reset / Recovery -->
+    <div id="forgotPinHelp" class="help-panel">
+      <h3>🔑 Pairing PIN Help &amp; Recovery</h3>
+      <ol>
+        <li><strong>Set PIN in Cloudflare Dashboard (Recommended):</strong><br>
+          In Cloudflare Dashboard &rarr; Workers &rarr; your worker &rarr; <em>Settings &rarr; Variables and Secrets</em>, add <code>PAIRING_PIN</code> with your chosen 4 digits (e.g. <code>1234</code>). This takes effect immediately.
+        </li>
+        <li><strong>Reset from Already-Paired E-Reader:</strong><br>
+          Open KOReader &rarr; tap <em>Tools &rarr; Sink &rarr; Reset Pairing PIN</em>.
+        </li>
+        <li><strong>First-time setup?</strong><br>
+          If this is your first time setting up, generate a code on your reader, type it above, and choose any 4-digit PIN below.
+        </li>
+      </ol>
+      <div style="text-align: right; margin-top: 8px;">
+        <button type="button" id="btnCloseHelp" class="btn-link" style="color: var(--text-muted);">Close ✕</button>
+      </div>
+    </div>
 
     <form id="pairForm">
       <div class="code-input-wrap">
@@ -157,35 +182,45 @@ app.get("/", async (c) => {
           autocorrect="off"
           autocapitalize="characters"
           spellcheck="false"
+          data-1p-ignore="true"
+          data-lpignore="true"
+          data-bwignore="true"
           autofocus
         />
       </div>
 
       <div class="pin-wrap">
-        <div>
-          <label for="pairingPin" class="pin-label" id="pinLabel">Pairing PIN</label>
-          <span class="forgot-pin" id="btnForgotPin">Forgot PIN?</span>
+        <div class="pin-header">
+          <label for="pairingPin" class="pin-label" id="pinLabel">Pairing PIN (4 digits)</label>
+          <button type="button" class="btn-link" id="btnForgotPin">Forgot PIN?</button>
         </div>
         <input
-          type="password"
+          type="text"
           id="pairingPin"
+          name="sink_device_pin"
           class="pin-input"
-          placeholder="4-digit PIN"
+          placeholder="0000"
           inputmode="numeric"
-          maxlength="16"
-          autocomplete="current-password"
+          pattern="[0-9]*"
+          maxlength="4"
+          autocomplete="off"
+          autocorrect="off"
+          spellcheck="false"
+          data-1p-ignore="true"
+          data-lpignore="true"
+          data-bwignore="true"
         />
       </div>
 
       <button type="submit" id="btnSubmit" class="btn-primary">
-        <span>Connect E-Reader &rarr;</span>
+        <span id="btnText">Connect E-Reader &rarr;</span>
       </button>
 
       <div id="alertBox" class="alert"></div>
     </form>
 
     <div class="footer-help">
-      <strong>How it works:</strong> Paired devices sync reading progress together automatically and silently in the background.
+      <strong>How it works:</strong> KOReader generates an ephemeral 6-character code. Confirming it here securely links your e-reader to your cloud sync server.
     </div>
   </div>
 
@@ -202,21 +237,30 @@ app.get("/", async (c) => {
       }
 
       // Check if PIN is already stored in browser localStorage
-      const savedPin = localStorage.getItem(STORAGE_KEY);
       const pinInput = document.getElementById('pairingPin');
-      if (savedPin) {
-        pinInput.value = savedPin;
-      }
+      try {
+        const savedPin = localStorage.getItem(STORAGE_KEY);
+        if (savedPin && /^\\d{4}$/.test(savedPin)) {
+          pinInput.value = savedPin;
+        }
+      } catch (_) {}
 
       // Query server status to customize UI for initial setup vs returning user
       try {
         const res = await fetch('/api/session/status');
         const data = await res.json();
-        if (data && data.is_configured === false) {
-          document.getElementById('stepTitle').innerText = 'Set Up Your Sink Server';
-          document.getElementById('stepDesc').innerText = 'Enter your e-reader code and choose a 4-digit PIN to secure your server.';
-          document.getElementById('pinLabel').innerText = 'Choose a 4-digit Pairing PIN';
-          document.getElementById('btnForgotPin').style.display = 'none';
+        if (data) {
+          if (data.has_pin === false) {
+            document.getElementById('serverBadge').innerText = '⚙ First-Time Setup';
+            document.getElementById('stepTitle').innerText = 'Set Up Your Sink Server';
+            document.getElementById('stepDesc').innerHTML = 'Enter the 6-character code from your e-reader screen, then choose a <strong>4-digit PIN</strong> below to secure your server.';
+            document.getElementById('pinLabel').innerText = 'Choose a 4-Digit PIN';
+            document.getElementById('btnText').innerText = 'Initialize & Connect E-Reader →';
+            document.getElementById('btnForgotPin').style.display = 'none';
+          } else {
+            document.getElementById('serverBadge').innerText = '● Server Active';
+            document.getElementById('btnForgotPin').style.display = 'inline';
+          }
         }
       } catch (_) {}
 
@@ -229,39 +273,44 @@ app.get("/", async (c) => {
       }
     });
 
+    // Toggle help panel for PIN reset
     document.getElementById('btnForgotPin').addEventListener('click', (e) => {
       e.preventDefault();
-      alert(
-        "Forgot your Pairing PIN?\n\n" +
-        "1. Open KOReader on your already-paired e-reader and tap:\n" +
-        "   Tools -> Sink -> Reset Pairing PIN\n\n" +
-        "2. Or set the PAIRING_PIN variable in your Cloudflare Worker dashboard."
-      );
+      const help = document.getElementById('forgotPinHelp');
+      help.style.display = (help.style.display === 'block') ? 'none' : 'block';
+    });
+
+    document.getElementById('btnCloseHelp').addEventListener('click', (e) => {
+      e.preventDefault();
+      document.getElementById('forgotPinHelp').style.display = 'none';
     });
 
     document.getElementById('pairForm').addEventListener('submit', async (e) => {
       e.preventDefault();
       const alertBox = document.getElementById('alertBox');
       const btn = document.getElementById('btnSubmit');
+      const btnText = document.getElementById('btnText');
       const code = document.getElementById('pairingCode').value.trim().toUpperCase();
       const pin = document.getElementById('pairingPin').value.trim();
 
       if (!code || code.length < 4) {
         alertBox.className = 'alert error';
-        alertBox.innerText = 'Please enter the 6-character code from your e-reader screen.';
+        alertBox.innerText = 'Please enter the 6-character code shown on your e-reader screen.';
         alertBox.style.display = 'block';
+        document.getElementById('pairingCode').focus();
         return;
       }
 
-      if (!pin || pin.length < 4) {
+      if (!pin || pin.length !== 4 || !/^\\d{4}$/.test(pin)) {
         alertBox.className = 'alert error';
-        alertBox.innerText = 'Please enter your 4-digit Pairing PIN.';
+        alertBox.innerText = 'Please enter an exact 4-digit PIN (numbers only, 0000-9999).';
         alertBox.style.display = 'block';
+        document.getElementById('pairingPin').focus();
         return;
       }
 
       btn.disabled = true;
-      btn.innerText = 'Connecting...';
+      btnText.innerText = 'Connecting...';
       alertBox.style.display = 'none';
 
       try {
@@ -270,28 +319,29 @@ app.get("/", async (c) => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username: 'primary_reader', pin: pin })
         });
-        const data = await res.json();
+        const data = await res.json().catch(() => null) || {};
 
         if (res.ok && data.success) {
-          // Persist PIN in browser localStorage for 1-click pairings on future devices
-          localStorage.setItem(STORAGE_KEY, pin);
+          try {
+            localStorage.setItem(STORAGE_KEY, pin);
+          } catch (_) {}
           alertBox.className = 'alert success';
           alertBox.innerText = '✓ Device paired successfully! Look at your e-reader screen.';
           alertBox.style.display = 'block';
-          btn.innerText = '✓ Connected!';
+          btnText.innerText = '✓ Connected!';
         } else {
           alertBox.className = 'alert error';
-          alertBox.innerText = data.error || data.message || 'Invalid code or PIN. Please check and try again.';
+          alertBox.innerText = data.error || data.message || 'Invalid code or PIN. Please check your e-reader and try again.';
           alertBox.style.display = 'block';
           btn.disabled = false;
-          btn.innerText = 'Connect E-Reader →';
+          btnText.innerText = 'Connect E-Reader →';
         }
       } catch (err) {
         alertBox.className = 'alert error';
-        alertBox.innerText = 'Network error: ' + err.message;
+        alertBox.innerText = 'Network error: ' + (err.message || 'Could not reach server');
         alertBox.style.display = 'block';
         btn.disabled = false;
-        btn.innerText = 'Connect E-Reader →';
+        btnText.innerText = 'Connect E-Reader →';
       }
     });
   </script>
