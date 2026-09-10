@@ -60,29 +60,24 @@ async function ensureSessionTable(db: D1Database): Promise<void> {
   }
 }
 
-// 0. GET /api/session/status -> Checks whether the server already has a PIN or user configured
+// 0. GET /api/session/status -> Checks whether the server already has a PIN configured
 sessionRouter.get("/status", async (c) => {
   const db = c.env.DB;
   let isConfigured = false;
-  let hasPin = false;
 
   if (c.env.PAIRING_PIN || c.env.PAIRING_SECRET) {
     isConfigured = true;
-    hasPin = true;
   } else if (db) {
     try {
       await ensureDatabase(db);
       const pinHash = await getAppConfig(db, "pairing_pin_hash");
-      const user = await getUserByUsername(db, "primary_reader");
-      hasPin = !!pinHash;
-      isConfigured = !!(pinHash || user);
+      isConfigured = !!pinHash;
     } catch {
       isConfigured = false;
-      hasPin = false;
     }
   }
 
-  return c.json({ is_configured: isConfigured, has_pin: hasPin });
+  return c.json({ is_configured: isConfigured, has_pin: isConfigured });
 });
 
 // 1. POST /api/session/create -> E-reader requests pairing code and secret poll token
@@ -286,7 +281,7 @@ sessionRouter.post("/:id/submit", async (c) => {
     }
   }
 
-  const isServerConfigured = !!(configuredPinHash || envPin || existingUser);
+  const isServerConfigured = !!(configuredPinHash || envPin);
   let userkey = "";
 
   if (!isServerConfigured) {
@@ -307,22 +302,26 @@ sessionRouter.post("/:id/submit", async (c) => {
         const hashedPin = await hashPin(submittedPin);
         await setAppConfig(db, "pairing_pin_hash", hashedPin);
 
-        // Generate strong random initial sync key
-        const randomBytes = new Uint8Array(16);
-        crypto.getRandomValues(randomBytes);
-        userkey =
-          "sink_key_" +
-          Array.from(randomBytes)
-            .map((b) => b.toString(16).padStart(2, "0"))
-            .join("");
+        // Reuse existing sync_key if user already exists, otherwise create new user
+        if (existingUser && existingUser.sync_key) {
+          userkey = existingUser.sync_key;
+        } else {
+          const randomBytes = new Uint8Array(16);
+          crypto.getRandomValues(randomBytes);
+          userkey =
+            "sink_key_" +
+            Array.from(randomBytes)
+              .map((b) => b.toString(16).padStart(2, "0"))
+              .join("");
 
-        const passHash = await hashPassword(userkey);
-        await createUser(db, username, passHash, userkey);
+          const passHash = await hashPassword(userkey);
+          await createUser(db, username, passHash, userkey);
+        }
       } catch (err) {
         console.error("Error establishing initial PIN and user:", err);
       }
     } else {
-      userkey = `sink_key_${sessionId}`;
+      userkey = (existingUser && existingUser.sync_key) || `sink_key_${sessionId}`;
     }
   } else {
     // SUBSEQUENT PAIRING: Strictly authenticate using PIN or existing credentials
@@ -331,6 +330,13 @@ sessionRouter.post("/:id/submit", async (c) => {
     if (submittedPin) {
       if (envPin && (await verifyPin(submittedPin, envPin))) {
         isAuthorized = true;
+        // Keep DB PIN hash in sync with envPin override
+        if (db) {
+          try {
+            const hashedPin = await hashPin(submittedPin);
+            await setAppConfig(db, "pairing_pin_hash", hashedPin);
+          } catch {}
+        }
       } else if (configuredPinHash && (await verifyPin(submittedPin, configuredPinHash))) {
         isAuthorized = true;
       }
@@ -341,7 +347,7 @@ sessionRouter.post("/:id/submit", async (c) => {
       const { valid } = await verifyPassword(body.userkey.trim(), existingUser.password_hash);
       if (valid) {
         isAuthorized = true;
-        if (db && !configuredPinHash && !envPin && submittedPin && submittedPin.length >= 4) {
+        if (db && submittedPin && /^\d{4}$/.test(submittedPin)) {
           try {
             const hashedPin = await hashPin(submittedPin);
             await setAppConfig(db, "pairing_pin_hash", hashedPin);
