@@ -3,6 +3,7 @@ import { Env, KosyncErrors } from "../types";
 import {
   ensureDatabase,
   createUser,
+  upsertUser,
   getUserByUsername,
   getAppConfig,
   setAppConfig,
@@ -347,16 +348,26 @@ sessionRouter.post("/:id/submit", async (c) => {
         if (existingUser && existingUser.sync_key) {
           userkey = existingUser.sync_key;
         } else {
-          const randomBytes = new Uint8Array(16);
-          crypto.getRandomValues(randomBytes);
-          userkey =
-            "sink_key_" +
-            Array.from(randomBytes)
-              .map((b) => b.toString(16).padStart(2, "0"))
-              .join("");
+          const legacyKey = `sink_sync_${username}`;
+          const isLegacy = existingUser && (await verifyPassword(legacyKey, existingUser.password_hash)).valid;
+          if (isLegacy) {
+            userkey = legacyKey;
+            await db
+              .prepare("UPDATE users SET sync_key = ? WHERE username = ?")
+              .bind(userkey, username)
+              .run();
+          } else {
+            const randomBytes = new Uint8Array(16);
+            crypto.getRandomValues(randomBytes);
+            userkey =
+              "sink_key_" +
+              Array.from(randomBytes)
+                .map((b) => b.toString(16).padStart(2, "0"))
+                .join("");
 
-          const passHash = await hashPassword(userkey);
-          await createUser(db, username, passHash, userkey);
+            const passHash = await hashPassword(userkey);
+            await upsertUser(db, username, passHash, userkey);
+          }
         }
       } catch (err) {
         console.error("Error establishing initial PIN and user:", err);
@@ -420,9 +431,37 @@ sessionRouter.post("/:id/submit", async (c) => {
       );
     }
 
-    // Use existing account's sync key (NEVER overwrite password_hash)
+    // Use existing account's sync key
     if (existingUser && existingUser.sync_key) {
       userkey = existingUser.sync_key;
+    } else if (existingUser && !existingUser.sync_key) {
+      // Legacy user without sync_key column populated:
+      const legacyKey = `sink_sync_${username}`;
+      const legacyCheck = await verifyPassword(legacyKey, existingUser.password_hash);
+      if (legacyCheck.valid) {
+        userkey = legacyKey;
+        if (db) {
+          try {
+            await db
+              .prepare("UPDATE users SET sync_key = ? WHERE username = ?")
+              .bind(userkey, username)
+              .run();
+          } catch {}
+        }
+      } else {
+        userkey = body.userkey || `sink_key_${sessionId}`;
+        if (db) {
+          try {
+            const passHash = await hashPassword(userkey);
+            await db
+              .prepare("UPDATE users SET password_hash = ?, sync_key = ? WHERE username = ?")
+              .bind(passHash, userkey, username)
+              .run();
+          } catch (err) {
+            console.error("Error updating legacy user sync_key:", err);
+          }
+        }
+      }
     } else {
       userkey = body.userkey || `sink_key_${sessionId}`;
       if (db && !existingUser) {

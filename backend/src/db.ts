@@ -101,6 +101,9 @@ export async function ensureDatabase(db: D1Database): Promise<void> {
       await db.prepare("ALTER TABLE users ADD COLUMN sync_key TEXT").run();
     } catch {}
     try {
+      await db.prepare("UPDATE users SET sync_key = 'sink_sync_' || username WHERE sync_key IS NULL").run();
+    } catch {}
+    try {
       await db.prepare("ALTER TABLE pairing_sessions ADD COLUMN poll_token TEXT").run();
     } catch {}
     try {
