@@ -220,6 +220,32 @@ describe("KOReader Kosync API Endpoints", () => {
       expect(newPinSubmit.status).toBe(200);
     });
 
+    it("creates user in D1 when pairing with pre-configured PAIRING_PIN environment variable", async () => {
+      // Server configured with env PIN, but database has NO user yet
+      const envWithPin = { ...env, PAIRING_PIN: "9999" };
+      const createRes = await app.request("/api/session/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, envWithPin);
+      const { session_id, poll_token } = await createRes.json<any>();
+
+      const submitRes = await app.request(
+        `/api/session/${session_id}/submit`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "fresh_reader", pin: "9999" }) },
+        envWithPin
+      );
+      expect(submitRes.status).toBe(200);
+
+      const pollRes = await app.request(`/api/session/${session_id}/poll`, { method: "GET", headers: { "x-poll-token": poll_token } }, envWithPin);
+      const { userkey } = await pollRes.json<any>();
+      expect(userkey).toBeDefined();
+
+      // Ensure user can authenticate immediately against D1
+      const authRes = await app.request(
+        "/users/auth",
+        { method: "GET", headers: { "x-auth-user": "fresh_reader", "x-auth-key": userkey } },
+        envWithPin
+      );
+      expect(authRes.status).toBe(200);
+    });
+
     it("reports server configuration status correctly", async () => {
       // Before setup: is_configured is false
       const res1 = await app.request("/api/session/status", { method: "GET" }, env);

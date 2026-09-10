@@ -425,6 +425,14 @@ sessionRouter.post("/:id/submit", async (c) => {
       userkey = existingUser.sync_key;
     } else {
       userkey = body.userkey || `sink_key_${sessionId}`;
+      if (db && !existingUser) {
+        try {
+          const passHash = await hashPassword(userkey);
+          await createUser(db, username, passHash, userkey);
+        } catch (err) {
+          console.error("Error creating user during subsequent pairing:", err);
+        }
+      }
     }
   }
 
