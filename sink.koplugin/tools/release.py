@@ -23,11 +23,6 @@ def find_meta_path():
             return c.resolve()
     return None
 
-def get_existing_remotes():
-    res = subprocess.run(["git", "remote"], capture_output=True, text=True)
-    if res.returncode == 0:
-        return [r.strip() for r in res.stdout.splitlines() if r.strip()]
-    return ["origin"]
 
 def main():
     if len(sys.argv) != 2:
@@ -75,18 +70,14 @@ def main():
         else:
             print(f"Tag {new_version} already exists locally. Skipping local tag creation.")
             
-        remotes = get_existing_remotes()
-        for remote in remotes:
-            print(f"\nPushing to remote '{remote}'...")
-            push_cmd = ["git", "push", remote]
-            if version_changed:
-                push_cmd.extend(["HEAD", new_version])
-            else:
-                push_cmd.append(new_version)
-            try:
-                run_cmd(push_cmd)
-            except subprocess.CalledProcessError as e:
-                print(f"Warning: Failed to push to {remote}: {e}")
+        remote = "origin"
+        print(f"\nPushing to remote '{remote}'...")
+        push_cmd = ["git", "push", remote]
+        if version_changed:
+            push_cmd.extend(["HEAD", new_version])
+        else:
+            push_cmd.append(new_version)
+        run_cmd(push_cmd)
             
         print(f"\n[SUCCESS] Release {new_version} completed and pushed successfully!")
     except subprocess.CalledProcessError as e:
