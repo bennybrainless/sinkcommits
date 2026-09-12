@@ -1138,6 +1138,20 @@ function Sink:getMenuTable()
             end,
         },
 
+        -- Reset Pairing PIN
+        {
+            text = _("Reset Pairing PIN"),
+            enabled_func = function()
+                return self.settings.username ~= ""
+            end,
+            keep_menu_open = false,
+            callback = function()
+                if SinkPairing and SinkPairing.showResetPinDialog then
+                    SinkPairing:showResetPinDialog(self)
+                end
+            end,
+        },
+
         -- 7. Synced Books (Cloud Library)
         {
             text = _("Synced Books (Cloud Library)"),
@@ -1256,9 +1270,13 @@ function Sink:showPairedDevicesDialog()
     UIManager:show(Notification:new{ text = _("Fetching paired devices...") })
     local res, err = self:_makeRequest("GET", "/syncs/devices")
     if err or not res or res.status ~= 200 then
-        UIManager:show(InfoMessage:new{
-            text = _("Could not fetch paired devices:\n") .. tostring(err or (res and res.raw) or "Error"),
-        })
+        local msg
+        if res and res.status == 401 then
+            msg = _("Authentication failed (401 Unauthorized).\nYour e-reader's credentials do not match this server.\n\nTap 'Re-Pair Device' to reconnect.")
+        else
+            msg = _("Could not fetch paired devices:\n") .. tostring(err or (res and res.raw) or "Error")
+        end
+        UIManager:show(InfoMessage:new{ text = msg })
         return
     end
 
@@ -1326,9 +1344,13 @@ function Sink:showCloudLibraryDialog()
     UIManager:show(Notification:new{ text = _("Fetching cloud library...") })
     local res, err = self:_makeRequest("GET", "/syncs/books")
     if err or not res or res.status ~= 200 then
-        UIManager:show(InfoMessage:new{
-            text = _("Could not fetch synced books:\n") .. tostring(err or (res and res.raw) or "Error"),
-        })
+        local msg
+        if res and res.status == 401 then
+            msg = _("Authentication failed (401 Unauthorized).\nYour e-reader's credentials do not match this server.\n\nTap 'Re-Pair Device' to reconnect.")
+        else
+            msg = _("Could not fetch synced books:\n") .. tostring(err or (res and res.raw) or "Error")
+        end
+        UIManager:show(InfoMessage:new{ text = msg })
         return
     end
 

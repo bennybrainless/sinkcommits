@@ -114,6 +114,7 @@ async function handleAuth(c: any) {
     }
 
     c.header("x-auth-user", creds.username);
+    // x-auth-token is emitted for upstream Kosync API specification compliance
     c.header("x-auth-token", `token_${creds.username}_${Date.now()}`);
     return c.json({ authorized: "OK" }, 200);
   } catch (err: any) {

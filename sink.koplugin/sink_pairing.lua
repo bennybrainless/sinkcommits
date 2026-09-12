@@ -29,6 +29,7 @@ pcall(function() QRWidget = require("ui/widget/qrwidget") end)
 local SinkPairing = {
     dialog = nil,
     session_id = nil,
+    poll_token = nil,
     poll_timer = nil,
     is_pairing = false,
     poll_count = 0,
@@ -82,6 +83,7 @@ end
 function SinkPairing:stop()
     self.is_pairing = false
     self.session_id = nil
+    self.poll_token = nil
     if self.poll_timer then
         UIManager:unschedule(self.poll_timer)
         self.poll_timer = nil
@@ -128,6 +130,7 @@ function SinkPairing:startPairing(sink_plugin, on_complete)
 
         local session_id = sess_data.session_id
         self.session_id = session_id
+        self.poll_token = sess_data.poll_token
         self.is_pairing = true
         self.poll_count = 0
         logger.info("Sink: started pairing session with code: " .. tostring(session_id))
@@ -250,7 +253,12 @@ function SinkPairing:pollSession(server_url, session_id, sink_plugin, on_complet
     end
 
     local poll_url = server_url .. "/api/session/" .. session_id .. "/poll"
-    local poll_ok, poll_code, poll_resp = httpRequest(poll_url, "GET", {}, nil, 4)
+    local poll_headers = {}
+    if self.poll_token then
+        poll_headers["X-Poll-Token"] = self.poll_token
+        poll_url = poll_url .. "?token=" .. self.poll_token
+    end
+    local poll_ok, poll_code, poll_resp = httpRequest(poll_url, "GET", poll_headers, nil, 4)
 
     if not self.is_pairing or self.session_id ~= session_id then return end
 
@@ -284,6 +292,64 @@ function SinkPairing:pollSession(server_url, session_id, sink_plugin, on_complet
             self:pollSession(server_url, session_id, sink_plugin, on_complete)
         end
         UIManager:scheduleIn(1.5, self.poll_timer)
+    end
+end
+
+function SinkPairing:showResetPinDialog(sink_plugin)
+    local InputDialog = require("ui/widget/inputdialog")
+    local input_dlg
+    input_dlg = InputDialog:new{
+        title = _("Reset Pairing PIN"),
+        description = _("Enter a new 4-digit PIN for device pairing:"),
+        input = "",
+        input_type = "number",
+        save_callback = function(new_pin)
+            new_pin = new_pin and new_pin:match("^%s*(.-)%s*$")
+            if not new_pin or #new_pin < 4 then
+                UIManager:show(InfoMessage:new{
+                    text = _("PIN must be at least 4 digits."),
+                })
+                return
+            end
+
+            NetworkMgr:runWhenOnline(function()
+                local res, err
+                if sink_plugin and sink_plugin._makeRequest then
+                    res, err = sink_plugin:_makeRequest("POST", "/api/session/reset-pin", { new_pin = new_pin })
+                else
+                    local server_url = cleanUrl(sink_plugin.settings.server_url)
+                    local reset_url = server_url .. "/api/session/reset-pin"
+                    local req_headers = {
+                        ["Content-Type"] = "application/json",
+                        ["x-auth-user"] = sink_plugin.settings.username or "",
+                        ["x-auth-key"] = sink_plugin.settings.userkey or "",
+                    }
+                    local req_body = json.encode({ new_pin = new_pin })
+                    local ok, code, resp_text = httpRequest(reset_url, "POST", req_headers, req_body, 8)
+                    res = { status = code, raw = resp_text }
+                end
+
+                if res and res.status == 200 then
+                    UIManager:show(InfoMessage:new{
+                        text = _("✓ Pairing PIN updated successfully!\nYou can now use this PIN when connecting devices."),
+                        timeout = 6,
+                    })
+                elseif res and res.status == 404 then
+                    UIManager:show(InfoMessage:new{
+                        text = _("Backend endpoint not found (404).\nPlease deploy the updated backend to your Cloudflare Worker."),
+                    })
+                else
+                    local err_detail = (res and res.body and res.body.error) or (res and tostring(res.status)) or err or "Error"
+                    UIManager:show(InfoMessage:new{
+                        text = string.format(_("Could not update PIN (%s).\nPlease check your connection or backend deployment."), tostring(err_detail)),
+                    })
+                end
+            end)
+        end,
+    }
+    UIManager:show(input_dlg)
+    if input_dlg.onShowKeyboard then
+        input_dlg:onShowKeyboard()
     end
 end
 

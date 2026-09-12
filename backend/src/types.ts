@@ -2,6 +2,8 @@ export interface Env {
   DB: D1Database;
   ENABLE_USER_REGISTRATION?: string;
   ADMIN_PIN?: string;
+  PAIRING_PIN?: string;
+  PAIRING_SECRET?: string;
   DEPLOY_HOOK_URL?: string;
 }
 
