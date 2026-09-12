@@ -1025,22 +1025,26 @@ local function injectSinkIntoToolsMenu()
         "ui/elements/filemanager_menu_order",
     }
     local function removeItem(tbl, target_id)
-        if type(tbl) ~= "table" then return end
+        if type(tbl) ~= "table" then return false end
         for k, v in pairs(tbl) do
             if v == target_id then
                 table.remove(tbl, k)
-                return
+                return true
             elseif type(v) == "table" then
-                removeItem(v, target_id)
+                if removeItem(v, target_id) then
+                    return true
+                end
             end
         end
+        return false
     end
 
     for _, order_path in ipairs(menu_orders) do
         local ok, order = pcall(require, order_path)
         if ok and type(order) == "table" and type(order.tools) == "table" then
             removeItem(order, "sink_sync")
-            table.insert(order.tools, 1, "sink_sync")
+            local insert_idx = math.min(5, #order.tools + 1)
+            table.insert(order.tools, insert_idx, "sink_sync")
         end
     end
 end

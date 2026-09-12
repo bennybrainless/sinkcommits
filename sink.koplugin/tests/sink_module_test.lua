@@ -147,6 +147,44 @@ assert(run_when_online_called == false, "Background hooks must NEVER invoke runW
 local menu = instance:getMenuTable()
 assert(type(menu) == "table" and #menu >= 4, "Menu table must have at least 4 items")
 
+-- Test Tools menu ordering injection (places Sink in 5th position)
+local mock_reader_order = {
+    tools = {
+        "read_timer",
+        "calibre",
+        "exporter",
+        "statistics",
+        "progress_sync",
+        "cloudstorage",
+    }
+}
+local mock_fm_order = {
+    tools = {
+        "read_timer",
+        "calibre",
+        "exporter",
+        "statistics",
+        "cloudstorage",
+    }
+}
+package.loaded["ui/elements/reader_menu_order"] = mock_reader_order
+package.loaded["ui/elements/filemanager_menu_order"] = mock_fm_order
+
+local main_menu_items = {}
+instance:addToMainMenu(main_menu_items)
+assert(main_menu_items.sink_sync ~= nil, "sink_sync must be registered in main_menu_items")
+assert(mock_reader_order.tools[5] == "sink_sync", "Sink must be placed in 5th position in reader tools menu")
+assert(mock_fm_order.tools[5] == "sink_sync", "Sink must be placed in 5th position in filemanager tools menu")
+
+-- Test idempotency (calling addToMainMenu again should not duplicate sink_sync)
+instance:addToMainMenu(main_menu_items)
+local sink_count = 0
+for _, item in ipairs(mock_reader_order.tools) do
+    if item == "sink_sync" then sink_count = sink_count + 1 end
+end
+assert(sink_count == 1, "Sink must not be duplicated in menu order")
+assert(mock_reader_order.tools[5] == "sink_sync", "Sink must remain in 5th position upon repeated menu injection")
+
 -- Test 1: _getDocumentMD5 with binary checksum
 local mock_doc_settings = {
     settings = { partial_md5_checksum = "abc123md5hash" },
