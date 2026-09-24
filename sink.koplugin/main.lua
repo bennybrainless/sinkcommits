@@ -696,8 +696,11 @@ function Sink:_pushDocument(is_manual, is_suspend)
         alt_hashes = #alt_list > 0 and alt_list or nil,
     }
 
-    -- Strict timeout on suspend (2s) to prevent Kindle watchdog panics
-    local timeout = is_suspend and 2 or (is_manual and 8 or 3)
+    -- Strict timeout on Kindle (2s) to prevent powerd watchdog panics.
+    -- Relaxed timeout on Kobo/other devices (5s) for DNS + TLS handshakes.
+    local is_kindle = Device and Device.isKindle and Device:isKindle()
+    local suspend_timeout = is_kindle and 2 or 5
+    local timeout = is_suspend and suspend_timeout or (is_manual and 8 or 3)
     local push_res, push_err = self:_makeRequest("PUT", "/syncs/progress", push_payload, timeout)
 
     if push_err or not push_res or push_res.status ~= 200 then
@@ -887,6 +890,10 @@ function Sink:onCloseDocument()
     collectgarbage("step", 100)
 end
 
+function Sink:onStandby()
+    self:onSuspend()
+end
+
 function Sink:onSuspend()
     if self.resume_timer then
         if UIManager and UIManager.unschedule then
@@ -895,12 +902,57 @@ function Sink:onSuspend()
         self.resume_timer = nil
     end
 
-    -- Fast-path: if not dirty, zero work is performed!
-    if not self.doc_is_dirty then
+    -- Fast-path: if auto-sync is off or no pages were turned, sleep immediately
+    if not self.settings.auto_sync or not self.doc_is_dirty then
         return
     end
 
-    self:_silentBackgroundSync("onSuspend", "push", true)
+    local is_kindle = Device and Device.isKindle and Device:isKindle()
+
+    -- Kindle fast-path: skip immediately if offline to avoid powerd watchdog conflicts
+    if is_kindle and not NetworkMgr:isOnline() then
+        return
+    end
+
+    -- Intercept UIManager:show to suppress any KOReader connection toasts
+    -- so the transparent wallpaper/screensaver is never dirtied or refreshed.
+    local orig_uimanager_show = UIManager and UIManager.show
+    if UIManager and orig_uimanager_show then
+        UIManager.show = function(self_ui, widget, ...)
+            local target = (self_ui == UIManager) and widget or self_ui
+            return target
+        end
+    end
+
+    local ok, err = pcall(function()
+        -- On Kobo and non-Kindle devices, safely wake Wi-Fi and wait for association
+        if not is_kindle and not NetworkMgr:isOnline() then
+            logger.info("Sink [onSuspend]: Device is offline. Silently waking Wi-Fi for suspend sync...")
+            NetworkMgr:turnOnWifi()
+
+            local max_wait = 10 -- 10s ceiling for cold Wi-Fi driver init + DHCP
+            local deadline = socket.gettime() + max_wait
+            while not NetworkMgr:isOnline() and socket.gettime() < deadline do
+                socket.sleep(0.5)
+            end
+        end
+
+        if not NetworkMgr:isOnline() then
+            logger.info("Sink [onSuspend]: Device is offline. Skipping suspend sync.")
+            return
+        end
+
+        self:_silentBackgroundSync("onSuspend", "push", true)
+    end)
+
+    -- Always restore UIManager.show so dialogs and menus work normally on wake
+    if UIManager and orig_uimanager_show then
+        UIManager.show = orig_uimanager_show
+    end
+
+    if not ok then
+        logger.warn("Sink [onSuspend] error: " .. tostring(err))
+    end
 end
 
 function Sink:onResume()
